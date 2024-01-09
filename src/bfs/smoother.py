@@ -1,48 +1,89 @@
 from dataclasses import dataclass
+from functools import partial
 from typing import Callable
-from numpy import ndarray
-# from sklearn._typing import ArrayLike, MatrixLike
 from sklearn.base import TransformerMixin
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PRNGKeyArray
+import jax
+from jax import numpy as jnp, nn as jnn, random as jrandom
+from jax.lax import scan
+import chex
+import equinox as eqx
+from equinox import Module, nn as enn
 
-from .approximation import Gaussian
+from .vi import Likelihood, elbo
+from .dynamics import sample_expected_moment
+from .distribution import ExponentialFamily
+from .nn import make_mlp
+from .util import Context
 
 
-@dataclass
-class DBFS(TransformerMixin):
-    approximate: type = Gaussian
-    dynamics: Callable[[Float[Array, " size"]], Float[Array, " size"]] = None
+def get_obs_encoder(state_dim: int, observation_dim: int, hidden_size: int, n_layers: int, *, key: PRNGKeyArray):
+    return make_mlp(observation_dim, state_dim + state_dim, hidden_size, n_layers, key=key)
 
-    def fit_transform(self, X, y=None, **fit_params) -> ndarray:
-        raise NotImplementedError()
 
-    def optimize_natural(
-        self,
-        natural_params: Float[Array, " time natural_size"],
-        predicted_natural_params: Float[Array, " time natural_size"],
-        natural_update_from_observation,
-        #  mean_params: Float[Array, " time mean_size"],
-        multiplier,
-        fisher_inverse,
-        *,
-        max_iter,
-        alpha,
-    ):
-        M = None
-        for i in range(max_iter):
-            mean_params = self.approximate.natural_to_mean(natural_params)
-            predicted_mean_params = self.approximate.natural_to_mean(
-                predicted_natural_params
-            )
-            natural_params = (1 - alpha) * natural_params + alpha * (
-                predicted_natural_params
-                + natural_update_from_observation
-                + M @ multiplier
-            )
-            predicted_natural_params = predicted_natural_params + alpha * (
-                fisher_inverse @ (mean_params - predicted_mean_params) - multiplier
-            )
-        else:
-            "reached last iteration"
+def get_back_encoder(state_dim: int, hidden_size: int, n_layers: int, *, key: PRNGKeyArray):
+    return make_mlp(state_dim + state_dim, state_dim + state_dim, hidden_size, n_layers, key=key)
 
-        return natural_params, predicted_natural_params
+
+def constrained_natural(unconstrained):
+    nat1, nat2 = jnp.split(unconstrained, 2)
+    nat2 = -jnn.softplus(nat2)
+    return jnp.concatenate((nat1, nat2), axis=-1)
+
+
+def smooth(y: Array, u: Array, dynamics, statenoise, likelihood: Likelihood, obs_encoder, back_encoder, approx: ExponentialFamily, ctx: Context, *, key: PRNGKeyArray):
+    T = jnp.size(y, 0)
+    nature_f_1 = constrained_natural(obs_encoder(y[0]))
+
+    def forward(carry, obs):
+        key, nature_f_tm1 = carry
+        key, key_t = jrandom.split(key, 2)
+        y, u = obs
+        moment_s_tm1 = approx.natural_to_moment(nature_f_tm1)
+        moment_p_t = sample_expected_moment(key_t, dynamics, statenoise, moment_s_tm1, u, approx, ctx.mc_size)
+        nature_p_t = approx.moment_to_natural(moment_p_t)
+        update = constrained_natural(obs_encoder(y))
+        nature_f_t = nature_p_t + update
+        return (key, nature_f_t), (nature_p_t, nature_f_t)
+
+    def backward(carry, z):
+        key, nature_s_tp1 = carry
+        key, key_t = jrandom.split(key, 2)
+        nature_f_t, u = z
+
+        update = constrained_natural(back_encoder(nature_s_tp1))
+        nature_s_t = nature_f_t + update
+        moment_s_t = approx.natural_to_moment(nature_s_t)
+        moment_p_tp1 = sample_expected_moment(key_t, dynamics, statenoise, moment_s_t, u, approx, ctx.mc_size)
+        return (key, nature_s_t), (moment_p_tp1, nature_s_t)
+
+    key, key_f = jrandom.split(key, 2)
+    _, (nature_p, nature_f) = scan(forward, init=(key_f, nature_f_1), xs=(y[1:], u[1:]))  # 
+    nature_p = jnp.vstack((nature_f_1, nature_p))
+    nature_f = jnp.vstack((nature_f_1, nature_f))
+    
+    nature_s_T = nature_f[-1]
+    key, key_b = jrandom.split(key, 2)
+    _, (moment_p, nature_s) = scan(backward, init=(key_b, nature_s_T), xs=(nature_f[:-1], u[:-1]), reverse=True)  # reverse both xs and the output
+    nature_s = jnp.vstack((nature_s, nature_s_T))
+    moment_s = jax.vmap(approx.natural_to_moment)(nature_s)
+    moment_s_1 = moment_s[0]
+    moment_p = jnp.vstack((moment_s_1, moment_p))
+    nature_p = jax.vmap(approx.moment_to_natural)(moment_p)
+
+    chex.assert_equal_shape((moment_p, nature_f, nature_s))    
+    chex.assert_tree_all_finite(nature_p)
+    chex.assert_tree_all_finite(nature_s)
+
+    velbo = jax.vmap(partial(elbo, eloglik=likelihood.eloglik, approx=approx, mc_size=ctx.mc_size, negative=True), in_axes=(0, 0, 0, 0))
+
+    key, *keys = jrandom.split(key, 1 + T)
+
+    assert len(keys) == T
+    assert len(moment_s) == T
+    assert len(moment_p) == T
+    assert len(y) == T
+
+    loss = velbo(jnp.array(keys), moment_s, moment_p, y)
+    
+    return loss, moment_p, moment_s

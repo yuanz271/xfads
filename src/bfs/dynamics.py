@@ -20,7 +20,7 @@ class GaussianStateNoise(Module):
 
 
 class Nonlinear(Module):
-    forward: enn.Sequential = field(init=False)
+    forward: Module = field(init=False)
 
     def __init__(self, state_dim: int, input_dim: int, hidden_size: int, n_layers: int, *, key: PRNGKeyArray):
         self.forward = make_mlp(state_dim + input_dim, state_dim, hidden_size, n_layers, key=key)

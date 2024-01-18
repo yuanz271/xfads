@@ -1,89 +1,242 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
-from typing import Callable
-from sklearn.base import TransformerMixin
-from jaxtyping import Array, Float, PRNGKeyArray
+from typing import Callable, Optional, Type
+from jaxtyping import Array, PRNGKeyArray, Scalar
 import jax
-from jax import numpy as jnp, nn as jnn, random as jrandom
-from jax.lax import scan
+from jax import numpy as jnp, random as jrandom
+import optax
 import chex
 import equinox as eqx
 from equinox import Module, nn as enn
+from sklearn.base import TransformerMixin
+from tqdm import trange
 
-from .vi import Likelihood, elbo
-from .dynamics import sample_expected_moment
-from .distribution import ExponentialFamily
-from .nn import make_mlp
-from .util import Context
-
-
-def get_obs_encoder(state_dim: int, observation_dim: int, hidden_size: int, n_layers: int, *, key: PRNGKeyArray):
-    return make_mlp(observation_dim, state_dim + state_dim, hidden_size, n_layers, key=key)
+from . import vi, smoothing
+from .dynamics import GaussianStateNoise, Nonlinear
+from .vi import DiagGaussainLik, Likelihood
+from .distribution import DiagMVN, ExponentialFamily
+from .smoothing import Hyperparam
 
 
-def get_back_encoder(state_dim: int, hidden_size: int, n_layers: int, *, key: PRNGKeyArray):
-    return make_mlp(state_dim + state_dim, state_dim + state_dim, hidden_size, n_layers, key=key)
+@dataclass
+class Opt:
+    max_iter: int = 1
+    learning_rate: float = 1e-3
+    clip_norm: float = 1.0
 
 
-def constrained_natural(unconstrained):
-    nat1, nat2 = jnp.split(unconstrained, 2)
-    nat2 = -jnn.softplus(nat2)
-    return jnp.concatenate((nat1, nat2), axis=-1)
+def batch_smoother(
+    dynamics,
+    statenoise,
+    likelihood,
+    obs_encoder,
+    back_encoder,
+    hyperparam,
+) -> Callable[[Array, Array, PRNGKeyArray], tuple[Array, Array]]:
+    smooth = jax.vmap(
+        partial(
+            smoothing.smooth,
+            dynamics=dynamics,
+            statenoise=statenoise,
+            likelihood=likelihood,
+            obs_encoder=obs_encoder,
+            back_encoder=back_encoder,
+            hyperparam=hyperparam,
+        )
+    )
+
+    def _smooth(ys, us, key) -> tuple[Array, Array]:
+        return smooth(ys, us, jrandom.split(key, jnp.size(ys, 0)))
+
+    return _smooth
 
 
-def smooth(y: Array, u: Array, dynamics, statenoise, likelihood: Likelihood, obs_encoder, back_encoder, approx: ExponentialFamily, ctx: Context, *, key: PRNGKeyArray):
-    T = jnp.size(y, 0)
-    nature_f_1 = constrained_natural(obs_encoder(y[0]))
+def batch_elbo(
+    eloglik, approx, mc_size
+) -> Callable[[PRNGKeyArray, Array, Array, Array, Optional[Callable]], Scalar]:
+    elbo = jax.vmap(
+        jax.vmap(partial(vi.elbo, eloglik=eloglik, approx=approx, mc_size=mc_size))
+    )  # (batch, seq)
 
-    def forward(carry, obs):
-        key, nature_f_tm1 = carry
-        key, key_t = jrandom.split(key, 2)
-        y, u = obs
-        moment_s_tm1 = approx.natural_to_moment(nature_f_tm1)
-        moment_p_t = sample_expected_moment(key_t, dynamics, statenoise, moment_s_tm1, u, approx, ctx.mc_size)
-        nature_p_t = approx.moment_to_natural(moment_p_t)
-        update = constrained_natural(obs_encoder(y))
-        nature_f_t = nature_p_t + update
-        return (key, nature_f_t), (nature_p_t, nature_f_t)
+    def _elbo(
+        key: PRNGKeyArray,
+        moment_s: Array,
+        moment_p: Array,
+        ys: Array,
+        *,
+        reduce: Callable = jnp.mean,
+    ) -> Scalar:
+        keys = jrandom.split(key, ys.shape[:2])  # ys.shape[:2] + (2,)
+        return reduce(elbo(keys, moment_s, moment_p, ys))
 
-    def backward(carry, z):
-        key, nature_s_tp1 = carry
-        key, key_t = jrandom.split(key, 2)
-        nature_f_t, u = z
+    return _elbo
 
-        update = constrained_natural(back_encoder(nature_s_tp1))
-        nature_s_t = nature_f_t + update
-        moment_s_t = approx.natural_to_moment(nature_s_t)
-        moment_p_tp1 = sample_expected_moment(key_t, dynamics, statenoise, moment_s_t, u, approx, ctx.mc_size)
-        return (key, nature_s_t), (moment_p_tp1, nature_s_t)
 
-    key, key_f = jrandom.split(key, 2)
-    _, (nature_p, nature_f) = scan(forward, init=(key_f, nature_f_1), xs=(y[1:], u[1:]))  # 
-    nature_p = jnp.vstack((nature_f_1, nature_p))
-    nature_f = jnp.vstack((nature_f_1, nature_f))
-    
-    nature_s_T = nature_f[-1]
-    key, key_b = jrandom.split(key, 2)
-    _, (moment_p, nature_s) = scan(backward, init=(key_b, nature_s_T), xs=(nature_f[:-1], u[:-1]), reverse=True)  # reverse both xs and the output
-    nature_s = jnp.vstack((nature_s, nature_s_T))
-    moment_s = jax.vmap(approx.natural_to_moment)(nature_s)
-    moment_s_1 = moment_s[0]
-    moment_p = jnp.vstack((moment_s_1, moment_p))
-    nature_p = jax.vmap(approx.moment_to_natural)(moment_p)
+def make_optimizer(module, opt: Opt):
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(opt.clip_norm),
+        optax.adamw(opt.learning_rate),
+    )
+    opt_state = optimizer.init(eqx.filter(module, eqx.is_inexact_array))
 
-    chex.assert_equal_shape((moment_p, nature_f, nature_s))    
-    chex.assert_tree_all_finite(nature_p)
-    chex.assert_tree_all_finite(nature_s)
+    return optimizer, opt_state
 
-    velbo = jax.vmap(partial(elbo, eloglik=likelihood.eloglik, approx=approx, mc_size=ctx.mc_size, negative=True), in_axes=(0, 0, 0, 0))
 
-    key, *keys = jrandom.split(key, 1 + T)
+def train(
+    y: Array,
+    u: Array,
+    dynamics,
+    statenoise,
+    likelihood: Likelihood,
+    obs_encoder,
+    back_encoder,
+    hyperparam: Hyperparam,
+    *,
+    key: PRNGKeyArray,
+    opt: Opt,
+) -> tuple:
+    chex.assert_rank((y, u), 3)
 
-    assert len(keys) == T
-    assert len(moment_s) == T
-    assert len(moment_p) == T
-    assert len(y) == T
+    m_modules = (dynamics, likelihood)
+    e_modules = (statenoise, obs_encoder, back_encoder)
 
-    loss = velbo(jnp.array(keys), moment_s, moment_p, y)
-    
-    return loss, moment_p, moment_s
+    opt_m, opt_m_state = make_optimizer(m_modules, opt)
+    opt_e, opt_e_state = make_optimizer(e_modules, opt)
+
+    def batch_loss(key, y, u, m_modules, e_modules) -> Scalar:
+        dynamics, likelihood = m_modules
+        statenoise, obs_encoder, back_encoder = e_modules
+
+        smooth = batch_smoother(
+            dynamics,
+            statenoise,
+            likelihood,
+            obs_encoder,
+            back_encoder,
+            hyperparam,
+        )
+        elbo = batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
+
+        skey, lkey = jrandom.split(key, 2)
+        moment_s, moment_p = smooth(y, u, skey)
+        return -elbo(lkey, moment_s, moment_p, y)
+
+    def eloss(e_modules, key) -> Scalar:
+        return batch_loss(key, y, u, m_modules, e_modules)
+
+    def mloss(m_modules, key) -> Scalar:
+        return batch_loss(key, y, u, m_modules, e_modules)
+
+    @eqx.filter_jit
+    def step(loss_func, module, optimizer, opt_state, key):
+        loss, grads = eqx.filter_value_and_grad(loss_func)(module, key)
+        updates, opt_state = optimizer.update(grads, opt_state, module)
+        module = eqx.apply_updates(module, updates)
+        return module, opt_state, loss
+
+    def train_loop(loss_func, modules, optimizer, opt_state, key):
+        old_loss = jnp.inf
+        for i in range(opt.max_iter):
+            key_i = jrandom.fold_in(key, i)
+            modules, opt_state, loss = step(
+                loss_func, modules, optimizer, opt_state, key_i
+            )
+            if jnp.isclose(loss, old_loss):
+                break
+            old_loss = loss
+        return loss, modules, opt_state
+
+    key, subkey = jrandom.split(key)
+    old_loss = jnp.inf
+    for i in (pbar := trange(opt.max_iter)):
+        ekey, mkey = jrandom.split(jrandom.fold_in(subkey, i))
+        loss_e, e_modules, opt_e_state = train_loop(
+            eloss, e_modules, opt_e, opt_e_state, ekey
+        )
+        loss_m, m_modules, opt_m_state = train_loop(
+            mloss, m_modules, opt_m, opt_m_state, mkey
+        )
+        loss = 0.5 * (loss_e + loss_m)
+        pbar.set_postfix({"loss": f"{loss:.3f}"})
+        if jnp.isclose(loss, old_loss):
+            break
+        old_loss = loss
+
+    return m_modules + e_modules
+
+
+@dataclass
+class XFADS(TransformerMixin):
+    hyperparam: Hyperparam
+    dynamics: Module
+    likelihood: Likelihood
+    obs_encoder: Module
+    back_encoder: Module
+    opt: Opt = field(init=False)
+
+    def __init__(
+        self,
+        observation_dim,
+        state_dim,
+        input_dim,
+        hidden_size,
+        n_layers,
+        *,
+        approx: Type[ExponentialFamily] = DiagMVN,
+        mc_size: int = 10,
+        random_state: int = 0,
+    ) -> None:
+        key: PRNGKeyArray = jrandom.PRNGKey(random_state)
+        self.hyperparam = Hyperparam(
+            approx, state_dim, input_dim, observation_dim, mc_size
+        )
+        self.opt = Opt(max_iter=100)
+        key, dkey, rkey, okey, bkey = jrandom.split(key, 5)
+        self.dynamics = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dkey)
+        self.statenoise = GaussianStateNoise(jnp.ones(state_dim))
+        self.likelihood = DiagGaussainLik(
+            cov=jnp.ones(observation_dim),
+            readout=enn.Linear(state_dim, observation_dim, key=rkey),
+        )
+        self.obs_encoder = smoothing.get_obs_encoder(
+            state_dim, observation_dim, hidden_size, n_layers, key=okey
+        )
+        self.back_encoder = smoothing.get_back_encoder(
+            state_dim, hidden_size, n_layers, key=bkey
+        )
+
+    def fit(self, X: tuple[Array, Array], *, key: PRNGKeyArray) -> None:
+        y, u = X
+        (
+            self.dynamics,
+            self.likelihood,
+            self.statenoise,
+            self.obs_encoder,
+            self.back_encoder,
+        ) = train(
+            y,
+            u,
+            self.dynamics,
+            self.statenoise,
+            self.likelihood,
+            self.obs_encoder,
+            self.back_encoder,
+            self.hyperparam,
+            key=key,
+            opt=self.opt,
+        )
+
+    def transform(
+        self, X: tuple[Array, Array], *, key: PRNGKeyArray
+    ) -> tuple[Array, Array]:
+        y, u = X
+
+        smooth = batch_smoother(
+            self.dynamics,
+            self.statenoise,
+            self.likelihood,
+            self.obs_encoder,
+            self.back_encoder,
+            self.hyperparam,
+        )
+        return smooth(y, u, key)

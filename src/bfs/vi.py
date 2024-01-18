@@ -1,5 +1,5 @@
 from abc import ABCMeta, abstractmethod
-from typing import Any, Callable, ClassVar
+from typing import Any, Callable, ClassVar, Type
 import jax
 from jax import numpy as jnp, nn as jnn, random as jrnd
 from jaxtyping import Array, PRNGKeyArray, Scalar
@@ -7,7 +7,7 @@ from equinox import Module, nn as enn
 import tensorflow_probability.substrates.jax.distributions as tfp
 import chex
 
-from .distribution import MVN, DiagMVN
+from .distribution import MVN, DiagMVN, ExponentialFamily
 
 
 class Likelihood(Module):
@@ -54,14 +54,11 @@ class DiagGaussainLik(Likelihood):
         return ll
 
 
-def elbo(key, moment, moment_p, y, eloglik, approx, *, mc_size, negative=True) -> Scalar:
+def elbo(key: PRNGKeyArray, moment: Array, moment_p: Array, y: Array, eloglik: Callable[..., Scalar], approx: Type[ExponentialFamily], *, mc_size: int) -> Scalar:
     """Single time point"""
-    ell = eloglik(key, moment, y, mc_size)
-    kl = approx.kl(moment, moment_p)
+    ell: Scalar = eloglik(key, moment, y, mc_size)
+    kl: Scalar = approx.kl(moment, moment_p)
     
-    lval = ell - kl
-    
-    if negative:
-        lval = -lval
+    lval: Scalar = ell - kl
     
     return lval

@@ -1,2 +1,1 @@
-def hello():
-    return "Hello from bfs!"
+# A single key is a (2,) array.

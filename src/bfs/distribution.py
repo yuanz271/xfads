@@ -4,6 +4,7 @@ Exponential-family variational distributions
 from abc import ABCMeta, abstractmethod
 import jax.random as jrnd
 import jax.numpy as jnp
+from jaxtyping import Array, Scalar
 import tensorflow_probability.substrates.jax.distributions as tfp
 
 
@@ -16,22 +17,27 @@ class ExponentialFamily(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
-    def natural_to_moment(cls, natural):
+    def natural_to_moment(cls, natural) -> Array:
         pass
 
     @classmethod
     @abstractmethod
-    def moment_to_natural(cls, moment):
+    def moment_to_natural(cls, moment) -> Array:
         pass
 
     @classmethod
     @abstractmethod
-    def sample_by_moment(cls, key, moment, mc_size):
+    def sample_by_moment(cls, key, moment, mc_size) -> Array:
         pass
 
     @classmethod
     @abstractmethod
-    def moment_size(cls, state_dim):
+    def moment_size(cls, state_dim) -> int:
+        pass
+    
+    @classmethod
+    @abstractmethod
+    def kl(cls, moment1, moment2) -> Scalar:
         pass
 
 

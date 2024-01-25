@@ -1,12 +1,12 @@
-from typing import Sequence
 from jax import numpy as jnp, random as jrandom
 from equinox import nn as enn
 import chex
+import equinox as eqx
 
 from bfs.distribution import DiagMVN
 from bfs.dynamics import GaussianStateNoise, Nonlinear
 from bfs.smoothing import get_back_encoder, get_obs_encoder
-from bfs.smoother import XFADS, Opt, batch_elbo, batch_smoother, train
+from bfs.smoother import XFADS, Opt, make_batch_elbo, make_batch_smoother, load_model, save_model, train
 from bfs.smoothing import Hyperparam
 from bfs.vi import DiagGaussainLik
 
@@ -24,9 +24,9 @@ def test_train(dimensions, capsys):
     f = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dyn_key)
 
     obs_encoder = get_obs_encoder(
-        state_dim, observation_dim, hidden_size, n_layers, key=obs_key
+        state_dim, observation_dim, hidden_size, n_layers, DiagMVN, key=obs_key
     )
-    back_encoder = get_back_encoder(state_dim, hidden_size, n_layers, key=back_key)
+    back_encoder = get_back_encoder(state_dim, hidden_size, n_layers, DiagMVN, key=back_key)
 
     key, ykey, ukey, rkey, skey = jrandom.split(key, 5)
 
@@ -38,7 +38,7 @@ def test_train(dimensions, capsys):
     linear_readout = enn.Linear(state_dim, observation_dim, key=rkey)
     likelihood = DiagGaussainLik(cov=jnp.ones(observation_dim), readout=linear_readout)
 
-    opt = Opt(max_iter=100)
+    opt = Opt(max_em_iter=10, batch_size=5)
     with capsys.disabled():
         train(
             y,
@@ -67,21 +67,21 @@ def test_batch_smoother(dimensions, capsys):
     f = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dyn_key)
 
     obs_encoder = get_obs_encoder(
-        state_dim, observation_dim, hidden_size, n_layers, key=obs_key
+        state_dim, observation_dim, hidden_size, n_layers, DiagMVN, key=obs_key
     )
-    back_encoder = get_back_encoder(state_dim, hidden_size, n_layers, key=back_key)
+    back_encoder = get_back_encoder(state_dim, hidden_size, n_layers, DiagMVN, key=back_key)
 
     key, ykey, ukey, rkey, skey = jrandom.split(key, 5)
 
     y = jrandom.normal(ykey, shape=(N, T, observation_dim))
     u = jrandom.normal(ukey, shape=(N, T, input_dim))
 
-    hyperparam = Hyperparam(state_dim, input_dim, observation_dim, mc_size=10)
+    hyperparam = Hyperparam(DiagMVN, state_dim, input_dim, observation_dim, mc_size=10)
     statenoise = GaussianStateNoise(jnp.ones(state_dim))
     linear_readout = enn.Linear(state_dim, observation_dim, key=rkey)
     likelihood = DiagGaussainLik(cov=jnp.ones(observation_dim), readout=linear_readout)
 
-    smooth = batch_smoother(
+    smooth = make_batch_smoother(
         f, statenoise, likelihood, obs_encoder, back_encoder, hyperparam
     )
     moment_s, moment_p = smooth(y, u, key)
@@ -99,7 +99,7 @@ def test_batch_elbo(dimensions, capsys):
     linear_readout = enn.Linear(state_dim, observation_dim, key=rkey)
     likelihood = DiagGaussainLik(cov=jnp.ones(observation_dim), readout=linear_readout)
 
-    elbo = batch_elbo(likelihood.eloglik, DiagMVN, mc_size=10)
+    elbo = make_batch_elbo(likelihood.eloglik, DiagMVN, mc_size=10)
     ys = jrandom.normal(ykey, (N, T, observation_dim))
     us = jrandom.normal(ukey, (N, T, input_dim))
     moment_s = jrandom.uniform(skey, (N, T, state_dim * 2))
@@ -115,5 +115,27 @@ def test_xfads(dimensions, capsys):
     n_layers: int = 2
     N: int = 10
     T: int = 100
-
+    key = jrandom.PRNGKey(0)
+    
+    model_spec = dict(observation_dim=observation_dim,
+        state_dim=state_dim,
+        input_dim=input_dim,
+        hidden_size=hidden_size,
+        n_layers=n_layers,
+        approx="DiagMVN",
+        mc_size=10,
+        random_state=0,
+    )
     xfads = XFADS(observation_dim, state_dim, input_dim, hidden_size, n_layers)
+
+    key, ykey, ukey, fkey, skey = jrandom.split(key, 5)
+
+    y = jrandom.normal(ykey, shape=(N, T, observation_dim))
+    u = jrandom.normal(ukey, shape=(N, T, input_dim))
+    
+    xfads.fit((y, u), key=fkey)
+
+    save_model("model.eqx", model_spec, xfads)
+    loaded_model = load_model("model.eqx")
+    
+    chex.assert_trees_all_equal(eqx.filter(xfads.dynamics, eqx.is_array), eqx.filter(loaded_model.dynamics, eqx.is_array))

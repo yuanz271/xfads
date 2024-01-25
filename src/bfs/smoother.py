@@ -240,3 +240,25 @@ class XFADS(TransformerMixin):
             self.hyperparam,
         )
         return smooth(y, u, key)
+    
+    def modules(self):
+        return self.dynamics, self.statenoise, self.likelihood, self.obs_encoder, self.back_encoder
+    
+    def set_modules(self, modules):
+        self.dynamics, self.statenoise, self.likelihood, self.obs_encoder, self.back_encoder = modules
+
+
+def save_model(file, spec, model: XFADS):
+    with open(file, "wb") as f:
+        spec = json.dumps(spec)
+        f.write((spec + "\n").encode())
+        eqx.tree_serialise_leaves(f, model.modules())
+
+
+def load_model(file) -> XFADS:
+    with open(file, "rb") as f:
+        kwargs = json.loads(f.readline().decode())
+        model = XFADS(**kwargs)
+        modules = eqx.tree_deserialise_leaves(f, model.modules())
+        model.set_modules(modules)
+        return model

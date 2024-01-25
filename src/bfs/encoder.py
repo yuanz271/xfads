@@ -1,6 +1,6 @@
 from typing import Any, Callable, ClassVar
 import jax
-from jax import numpy as jnp, nn as jnn, random as jrnd
+from jax import numpy as jnp, nn as jnn, random as jrandom
 from jaxtyping import Array, PRNGKeyArray
 from equinox import Module, nn as enn
 import tensorflow_probability.substrates.jax.distributions as tfp
@@ -30,8 +30,8 @@ class BackwardDiagMVN(Module):
     h0: Array
 
     def __init__(self, state_dim: int, observation_dim: int, hidden_size: int, *, key: PRNGKeyArray):
-        rnn_key, output_key, hkey = jrnd.split(key, 3)
-        self.h0 = jrnd.normal(hkey, shape=(hidden_size,))
+        rnn_key, output_key, hkey = jrandom.split(key, 3)
+        self.h0 = jrandom.normal(hkey, shape=(hidden_size,))
         self.cell = enn.GRUCell(observation_dim, hidden_size, key=rnn_key)
         self.output_layer = enn.Linear(hidden_size, state_dim*2, key=output_key)
 

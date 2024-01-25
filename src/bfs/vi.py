@@ -1,12 +1,12 @@
-from abc import ABCMeta, abstractmethod
-from typing import Any, Callable, ClassVar, Type
+from typing import Callable, ClassVar, Type
 import jax
-from jax import numpy as jnp, nn as jnn, random as jrnd
+from jax import numpy as jnp, nn as jnn
 from jaxtyping import Array, PRNGKeyArray, Scalar
-from equinox import Module, nn as enn
+from equinox import Module
 import tensorflow_probability.substrates.jax.distributions as tfp
 import chex
 
+from .nn import softplus_inverse
 from .distribution import MVN, DiagMVN, ExponentialFamily
 
 

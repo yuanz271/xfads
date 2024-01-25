@@ -20,7 +20,7 @@ class ImplicitDiagMVN(Module):
 
     def __call__(self, y: Array) -> tuple[Array, Array]:
         output = self.mlp(y)
-        nat1, nat2 = jnp.split(output, 2)
+        nat1, nat2 = jnp.split(output, 2, axis=-1)
         return nat1, jnn.softplus(nat2)
 
 

@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Callable, Optional, Type
+import json
+
 from jaxtyping import Array, PRNGKeyArray, Scalar
 import jax
 from jax import numpy as jnp, random as jrandom
@@ -20,12 +22,14 @@ from .smoothing import Hyperparam
 
 @dataclass
 class Opt:
-    max_iter: int = 1
+    max_inner_iter: int = 1
+    max_em_iter: int = 1
     learning_rate: float = 1e-3
     clip_norm: float = 1.0
+    batch_size: int = 1
 
 
-def batch_smoother(
+def make_batch_smoother(
     dynamics,
     statenoise,
     likelihood,
@@ -44,20 +48,21 @@ def batch_smoother(
             hyperparam=hyperparam,
         )
     )
-
+    
+    @eqx.filter_jit
     def _smooth(ys, us, key) -> tuple[Array, Array]:
         return smooth(ys, us, jrandom.split(key, jnp.size(ys, 0)))
 
     return _smooth
 
 
-def batch_elbo(
+def make_batch_elbo(
     eloglik, approx, mc_size
 ) -> Callable[[PRNGKeyArray, Array, Array, Array, Optional[Callable]], Scalar]:
     elbo = jax.vmap(
         jax.vmap(partial(vi.elbo, eloglik=eloglik, approx=approx, mc_size=mc_size))
     )  # (batch, seq)
-
+    
     def _elbo(
         key: PRNGKeyArray,
         moment_s: Array,
@@ -82,6 +87,63 @@ def make_optimizer(module, opt: Opt):
     return optimizer, opt_state
 
 
+def loader(ys, us, batch_size, *, key):# -> Generator[tuple[Any, Any, KeyArray], Any, None]:
+    chex.assert_equal_shape((ys, us), dims=0)
+    
+    n: int = jnp.size(ys, 0)
+    q = n // batch_size
+    m = n % batch_size
+    
+    key, permkey = jrandom.split(key)
+    perm = jax.random.permutation(permkey, jnp.arange(n))
+
+    K = q + 1 if m > 0 else q
+    for k in range(K):
+        indices = perm[k * batch_size : (k + 1) * batch_size]
+        yield ys[indices], us[indices], jrandom.fold_in(key, k)
+
+
+def batch_loss(m_modules, e_modules, y, u, key, hyperparam) -> Scalar:
+    dynamics, likelihood = m_modules
+    statenoise, obs_encoder, back_encoder = e_modules
+
+    smooth = make_batch_smoother(
+        dynamics,
+        statenoise,
+        likelihood,
+        obs_encoder,
+        back_encoder,
+        hyperparam,
+    )
+    elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
+
+    skey, lkey = jrandom.split(key)
+    moment_s, moment_p = smooth(y, u, skey)
+    return -elbo(lkey, moment_s, moment_p, y)
+
+
+def train_loop(modules, y, u, key, step, opt_state, opt):
+    old_loss = jnp.inf
+    for i in range(opt.max_inner_iter):
+        key_i = jrandom.fold_in(key, i)
+        total_loss = 0.
+        n_minibatch = 0
+        for ym, um, minibatch_key in loader(y, u, opt.batch_size, key=key_i):
+            modules, opt_state, loss = step(
+                modules, ym, um, minibatch_key, opt_state
+            )
+            # chex.assert_tree_all_finite(loss)
+            total_loss += loss
+            n_minibatch += 1
+        total_loss = total_loss / max(n_minibatch, 1)
+
+        if jnp.isclose(total_loss, old_loss):
+            break
+
+        old_loss = total_loss
+    return total_loss, modules, opt_state
+
+
 def train(
     y: Array,
     u: Array,
@@ -100,65 +162,49 @@ def train(
     m_modules = (dynamics, likelihood)
     e_modules = (statenoise, obs_encoder, back_encoder)
 
-    opt_m, opt_m_state = make_optimizer(m_modules, opt)
-    opt_e, opt_e_state = make_optimizer(e_modules, opt)
-
-    def batch_loss(key, y, u, m_modules, e_modules) -> Scalar:
-        dynamics, likelihood = m_modules
-        statenoise, obs_encoder, back_encoder = e_modules
-
-        smooth = batch_smoother(
-            dynamics,
-            statenoise,
-            likelihood,
-            obs_encoder,
-            back_encoder,
-            hyperparam,
-        )
-        elbo = batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
-
-        skey, lkey = jrandom.split(key, 2)
-        moment_s, moment_p = smooth(y, u, skey)
-        return -elbo(lkey, moment_s, moment_p, y)
-
-    def eloss(e_modules, key) -> Scalar:
-        return batch_loss(key, y, u, m_modules, e_modules)
-
-    def mloss(m_modules, key) -> Scalar:
-        return batch_loss(key, y, u, m_modules, e_modules)
+    optimizer_m, opt_state_mstep = make_optimizer(m_modules, opt)
+    optimizer_e, opt_state_estep = make_optimizer(e_modules, opt)
+    
+    @eqx.filter_value_and_grad
+    def eloss(e_modules, y, u, key) -> Scalar:
+        return batch_loss(m_modules, e_modules, y, u, key, hyperparam)
+    
+    @eqx.filter_value_and_grad
+    def mloss(m_modules, y, u, key) -> Scalar:
+        return batch_loss(m_modules, e_modules, y, u, key, hyperparam)
 
     @eqx.filter_jit
-    def step(loss_func, module, optimizer, opt_state, key):
-        loss, grads = eqx.filter_value_and_grad(loss_func)(module, key)
-        updates, opt_state = optimizer.update(grads, opt_state, module)
+    def estep(module, y, u, key, opt_state):
+        loss, grads = eloss(module, y, u, key)
+        updates, opt_state = optimizer_e.update(grads, opt_state, module)
         module = eqx.apply_updates(module, updates)
         return module, opt_state, loss
 
-    def train_loop(loss_func, modules, optimizer, opt_state, key):
-        old_loss = jnp.inf
-        for i in range(opt.max_iter):
-            key_i = jrandom.fold_in(key, i)
-            modules, opt_state, loss = step(
-                loss_func, modules, optimizer, opt_state, key_i
-            )
-            if jnp.isclose(loss, old_loss):
-                break
-            old_loss = loss
-        return loss, modules, opt_state
+    @eqx.filter_jit
+    def mstep(module, y, u, key, opt_state):
+        loss, grads = mloss(module, y, u, key)
+        updates, opt_state = optimizer_m.update(grads, opt_state, module)
+        module = eqx.apply_updates(module, updates)
+        return module, opt_state, loss
 
-    key, subkey = jrandom.split(key)
+    key, em_key = jrandom.split(key)
     old_loss = jnp.inf
-    for i in (pbar := trange(opt.max_iter)):
-        ekey, mkey = jrandom.split(jrandom.fold_in(subkey, i))
-        loss_e, e_modules, opt_e_state = train_loop(
-            eloss, e_modules, opt_e, opt_e_state, ekey
-        )
-        loss_m, m_modules, opt_m_state = train_loop(
-            mloss, m_modules, opt_m, opt_m_state, mkey
-        )
-        loss = 0.5 * (loss_e + loss_m)
-        pbar.set_postfix({"loss": f"{loss:.3f}"})
-        if jnp.isclose(loss, old_loss):
+    terminate = False
+    for i in (pbar := trange(opt.max_em_iter)):
+        try:
+            ekey, mkey = jrandom.split(jrandom.fold_in(em_key, i))
+            loss_e, e_modules, opt_state_estep = train_loop(
+                e_modules, y, u, ekey, estep, opt_state_estep, opt
+            )
+            loss_m, m_modules, opt_state_mstep = train_loop(
+                m_modules, y, u, mkey, mstep, opt_state_mstep, opt
+            )
+            loss = 0.5 * (loss_e.item() + loss_m.item())
+            pbar.set_postfix({"loss": f"{loss:.3f}"})
+        except KeyboardInterrupt:
+            terminate = True
+
+        if terminate or jnp.isclose(loss, old_loss):
             break
         old_loss = loss
 
@@ -185,12 +231,17 @@ class XFADS(TransformerMixin):
         approx: Type[ExponentialFamily] = DiagMVN,
         mc_size: int = 10,
         random_state: int = 0,
+        max_em_iter: int = 1,
+        max_inner_iter: int = 1,
+        batch_size: int = 1,
     ) -> None:
         key: PRNGKeyArray = jrandom.PRNGKey(random_state)
+        if isinstance(approx, str) and approx == "DiagMVN":
+            approx = DiagMVN
         self.hyperparam = Hyperparam(
             approx, state_dim, input_dim, observation_dim, mc_size
         )
-        self.opt = Opt(max_iter=100)
+        self.opt = Opt(max_em_iter=max_em_iter, max_inner_iter=max_inner_iter, batch_size=batch_size)
         key, dkey, rkey, okey, bkey = jrandom.split(key, 5)
         self.dynamics = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dkey)
         self.statenoise = GaussianStateNoise(jnp.ones(state_dim))
@@ -199,10 +250,10 @@ class XFADS(TransformerMixin):
             readout=enn.Linear(state_dim, observation_dim, key=rkey),
         )
         self.obs_encoder = smoothing.get_obs_encoder(
-            state_dim, observation_dim, hidden_size, n_layers, key=okey
+            state_dim, observation_dim, hidden_size, n_layers, approx, key=okey
         )
         self.back_encoder = smoothing.get_back_encoder(
-            state_dim, hidden_size, n_layers, key=bkey
+            state_dim, hidden_size, n_layers, approx, key=bkey
         )
 
     def fit(self, X: tuple[Array, Array], *, key: PRNGKeyArray) -> None:
@@ -231,7 +282,7 @@ class XFADS(TransformerMixin):
     ) -> tuple[Array, Array]:
         y, u = X
 
-        smooth = batch_smoother(
+        smooth = make_batch_smoother(
             self.dynamics,
             self.statenoise,
             self.likelihood,

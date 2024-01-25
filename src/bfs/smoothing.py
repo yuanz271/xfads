@@ -21,15 +21,15 @@ def get_obs_encoder(
     key: PRNGKeyArray,
 ):
     return make_mlp(
-        observation_dim, state_dim + state_dim, hidden_size, n_layers, key=key
+        observation_dim, approx.moment_size(state_dim), hidden_size, n_layers, key=key
     )
 
 
 def get_back_encoder(
-    state_dim: int, hidden_size: int, n_layers: int, *, key: PRNGKeyArray
+    state_dim: int, hidden_size: int, n_layers: int, approx: Type[ExponentialFamily], *, key: PRNGKeyArray
 ):
     return make_mlp(
-        state_dim + state_dim, state_dim + state_dim, hidden_size, n_layers, key=key
+        approx.moment_size(state_dim) * 2, approx.moment_size(state_dim), hidden_size, n_layers, key=key
     )
 
 

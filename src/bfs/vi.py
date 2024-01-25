@@ -29,27 +29,44 @@ class PoissonLik(Likelihood):
 
 
 class GaussainLik(Likelihood):
-    cov: Array
+    unconstrained_cov: Array
     readout: Module
 
+    def __init__(self, cov, readout):
+        self.unconstrained_cov = jnp.linalg.cholesky(cov)
+        self.readout = readout
+
+    def cov(self):
+        return self.unconstrained_cov @ self.unconstrained_cov.T 
+    
     def eloglik(self, key: PRNGKeyArray, moment: Array, y: Array, mc_size: int) -> Array:
         mean_z, cov_z = MVN.moment_to_canon(moment)
         mean_y = self.readout(mean_z)
         loading = self.readout.weight  # left matrix
-        cov_y = loading @ cov_z @ loading.T + self.cov
+        cov_y = loading @ cov_z @ loading.T + self.cov()
         ll = tfp.MultivariateNormalFullCovariance(mean_y, cov_y).log_prob(y)
         return ll
 
 
 class DiagGaussainLik(Likelihood):
-    cov: Array
+    # unconstrained_cov: Array
     readout: Module
+    dim: int
+
+    def __init__(self, cov, readout):
+        # self.unconstrained_cov = softplus_inverse(cov)
+        self.readout = readout
+        self.dim = jnp.size(cov)
+
+    def cov(self):
+        # return jnn.softplus(self.unconstrained_cov)
+        return jnp.ones(self.dim) * 2
 
     def eloglik(self, key: PRNGKeyArray, moment: Array, y: Array, mc_size: int) -> Array:
         mean_z, cov_z = DiagMVN.moment_to_canon(moment)
         mean_y = self.readout(mean_z)
         loading = self.readout.weight  # left matrix
-        cov_y = loading @ jnp.diag(cov_z) @ loading.T + jnp.diag(self.cov)
+        cov_y = loading @ jnp.diag(cov_z) @ loading.T + jnp.diag(self.cov())
         ll = tfp.MultivariateNormalFullCovariance(mean_y, cov_y).log_prob(y)
         return ll
 

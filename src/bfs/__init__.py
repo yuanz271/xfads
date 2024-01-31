@@ -1,1 +1,1 @@
-# A single key is a (2,) array.
+from .smoother import XFADS

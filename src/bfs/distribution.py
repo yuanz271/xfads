@@ -2,8 +2,7 @@
 Exponential-family variational distributions
 """
 from abc import ABCMeta, abstractmethod
-import jax.random as jrnd
-import jax.numpy as jnp
+from jax import numpy as jnp, random as jrandom
 from jaxtyping import Array, Scalar
 import tensorflow_probability.substrates.jax.distributions as tfp
 
@@ -55,7 +54,7 @@ class MVN(ExponentialFamily):
     @classmethod
     def sample_by_moment(cls, key, moment, mc_size):
         mean, cov = cls.moment_to_canon(moment)
-        return jrnd.multivariate_normal(key, mean, cov, shape=(mc_size,))  # It seems JAX does reparameterization trick
+        return jrandom.multivariate_normal(key, mean, cov, shape=(mc_size,))  # It seems JAX does reparameterization trick
 
     @classmethod
     def moment_to_canon(cls, moment):
@@ -65,7 +64,7 @@ class MVN(ExponentialFamily):
         # m = (sqrt(1 + 4n) - 1) / 2. See doc for simpler solution m = floor(sqrt(n)).
         n = jnp.size(moment, 0)
         m = int(jnp.sqrt(n))
-        mean, mmpcov = jnp.split(moment, [m])
+        mean, mmpcov = jnp.split(moment, [m], axis=-1)
         mmpcov = jnp.reshape(mmpcov, (m, m))
         cov = mmpcov - jnp.outer(mean, mean)
         return mean, cov
@@ -91,7 +90,7 @@ class MVN(ExponentialFamily):
 class DiagMVN(ExponentialFamily):
     @classmethod
     def natural_to_moment(cls, natural):
-        nat1, nat2 = jnp.split(natural, 2)
+        nat1, nat2 = jnp.split(natural, 2, -1)
         cov = -0.5 / nat2
         mean = -0.5 * nat1 / nat2
         return jnp.concatenate((mean, cov), axis=-1)
@@ -106,11 +105,11 @@ class DiagMVN(ExponentialFamily):
     @classmethod
     def sample_by_moment(cls, key, moment, mc_size):
         mean, cov = cls.moment_to_canon(moment)
-        return jrnd.multivariate_normal(key, mean, jnp.diag(cov), shape=(mc_size,))  # It seems JAX does reparameterization trick
+        return jrandom.multivariate_normal(key, mean, jnp.diag(cov), shape=(mc_size,))  # It seems JAX does the reparameterization trick
 
     @classmethod
     def moment_to_canon(cls, moment):
-        mean, cov = jnp.split(moment, 2)  # trick: the 2nd moment here is actually cov diag
+        mean, cov = jnp.split(moment, 2, -1)  # trick: the 2nd moment here is actually cov diag
         return mean, cov
 
     @classmethod

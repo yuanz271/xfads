@@ -3,6 +3,7 @@ from dataclasses import field
 import jax
 from jax import numpy as jnp, nn as jnn
 from jaxtyping import Array, PRNGKeyArray
+import equinox as eqx
 from equinox import Module
 
 from .nn import make_mlp, softplus_inverse
@@ -16,7 +17,7 @@ from .distribution import ExponentialFamily
 
 
 class GaussianStateNoise(Module):
-    unconstrained_cov: Array
+    unconstrained_cov: Array = eqx.field(static=True)
     
     def __init__(self, cov):
         self.unconstrained_cov = softplus_inverse(cov)

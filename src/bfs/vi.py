@@ -5,6 +5,7 @@ from jaxtyping import Array, PRNGKeyArray, Scalar
 from equinox import Module
 import tensorflow_probability.substrates.jax.distributions as tfp
 import chex
+import equinox as eqx
 
 from .nn import softplus_inverse
 from .distribution import MVN, DiagMVN, ExponentialFamily
@@ -49,18 +50,21 @@ class GaussainLik(Likelihood):
 
 
 class DiagGaussainLik(Likelihood):
-    # unconstrained_cov: Array
+    unconstrained_cov: Array = eqx.field(static=True)
+    # _cov: Array = eqx.field(static=True)
     readout: Module
-    dim: int
+    # dim: int
 
     def __init__(self, cov, readout):
-        # self.unconstrained_cov = softplus_inverse(cov)
+        self.unconstrained_cov = softplus_inverse(cov)
         self.readout = readout
-        self.dim = jnp.size(cov)
+        # self.dim = jnp.size(readout.bias)
+        # self._cov = cov
 
     def cov(self):
-        # return jnn.softplus(self.unconstrained_cov)
-        return jnp.ones(self.dim) * 2
+        return jnn.softplus(self.unconstrained_cov)
+        # return jnp.ones(self.dim) * self.s
+        # return self._cov
 
     def eloglik(self, key: PRNGKeyArray, moment: Array, y: Array, mc_size: int) -> Array:
         mean_z, cov_z = DiagMVN.moment_to_canon(moment)

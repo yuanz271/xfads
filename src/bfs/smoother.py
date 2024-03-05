@@ -25,7 +25,7 @@ class Opt:
     max_inner_iter: int = 1
     max_em_iter: int = 1
     learning_rate: float = 1e-3
-    clip_norm: float = 1.0
+    clip_norm: float = 5.0
     batch_size: int = 1
 
 
@@ -104,8 +104,7 @@ def loader(ys, us, batch_size, *, key):# -> Generator[tuple[Any, Any, KeyArray],
 
 
 def batch_loss(m_modules, e_modules, y, u, key, hyperparam) -> Scalar:
-    dynamics, likelihood = m_modules
-    statenoise, obs_encoder, back_encoder = e_modules
+    dynamics, likelihood, statenoise, obs_encoder, back_encoder = m_modules + e_modules
 
     smooth = make_batch_smoother(
         dynamics,
@@ -159,8 +158,8 @@ def train(
 ) -> tuple:
     chex.assert_rank((y, u), 3)
 
-    m_modules = (dynamics, likelihood)
-    e_modules = (statenoise, obs_encoder, back_encoder)
+    m_modules = (dynamics, likelihood, statenoise)
+    e_modules = (obs_encoder, back_encoder)
 
     optimizer_m, opt_state_mstep = make_optimizer(m_modules, opt)
     optimizer_e, opt_state_estep = make_optimizer(e_modules, opt)
@@ -200,6 +199,8 @@ def train(
                 m_modules, y, u, mkey, mstep, opt_state_mstep, opt
             )
             loss = 0.5 * (loss_e.item() + loss_m.item())
+
+            chex.assert_tree_all_finite(loss)
             pbar.set_postfix({"loss": f"{loss:.3f}"})
         except KeyboardInterrupt:
             terminate = True
@@ -215,6 +216,7 @@ def train(
 class XFADS(TransformerMixin):
     hyperparam: Hyperparam
     dynamics: Module
+    statenoise: Module
     likelihood: Likelihood
     obs_encoder: Module
     back_encoder: Module
@@ -227,9 +229,11 @@ class XFADS(TransformerMixin):
         input_dim,
         hidden_size,
         n_layers,
+        emission_noise,
+        state_noise,
         *,
         approx: Type[ExponentialFamily] = DiagMVN,
-        mc_size: int = 10,
+        mc_size: int = 1,
         random_state: int = 0,
         max_em_iter: int = 1,
         max_inner_iter: int = 1,
@@ -244,9 +248,9 @@ class XFADS(TransformerMixin):
         self.opt = Opt(max_em_iter=max_em_iter, max_inner_iter=max_inner_iter, batch_size=batch_size)
         key, dkey, rkey, okey, bkey = jrandom.split(key, 5)
         self.dynamics = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dkey)
-        self.statenoise = GaussianStateNoise(jnp.ones(state_dim))
+        self.statenoise = GaussianStateNoise(state_noise * jnp.ones(state_dim))
         self.likelihood = DiagGaussainLik(
-            cov=jnp.ones(observation_dim),
+            cov=emission_noise*jnp.ones(observation_dim),
             readout=enn.Linear(state_dim, observation_dim, key=rkey),
         )
         self.obs_encoder = smoothing.get_obs_encoder(

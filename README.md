@@ -1,3 +1,3 @@
-# bfs
+# XFADS
 
-Describe your project here.
+eXponential FAmily Dynamical System

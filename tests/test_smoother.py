@@ -3,12 +3,12 @@ from equinox import nn as enn
 import chex
 import equinox as eqx
 
-from bfs.distribution import DiagMVN
-from bfs.dynamics import GaussianStateNoise, Nonlinear
-from bfs.smoothing import get_back_encoder, get_obs_encoder
-from bfs.smoother import XFADS, Opt, make_batch_elbo, make_batch_smoother, load_model, save_model, train
-from bfs.smoothing import Hyperparam
-from bfs.vi import DiagGaussainLik
+from xfads.distribution import DiagMVN
+from xfads.dynamics import GaussianStateNoise, Nonlinear
+from xfads.smoothing import get_back_encoder, get_obs_encoder
+from xfads.smoother import XFADS, Opt, make_batch_elbo, make_batch_smoother, load_model, save_model, train
+from xfads.smoothing import Hyperparam
+from xfads.vi import DiagGaussainLik
 
 
 def test_train(dimensions, capsys):

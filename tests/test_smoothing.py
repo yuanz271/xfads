@@ -4,11 +4,11 @@ import chex
 import jax
 import pytest
 
-from bfs.distribution import DiagMVN
-from bfs.dynamics import GaussianStateNoise, Nonlinear
-from bfs.smoothing import get_back_encoder, get_obs_encoder, smooth
-from bfs.smoothing import Hyperparam
-from bfs.vi import DiagGaussainLik
+from xfads.distribution import DiagMVN
+from xfads.dynamics import GaussianStateNoise, Nonlinear
+from xfads.smoothing import get_back_encoder, get_obs_encoder, smooth
+from xfads.smoothing import Hyperparam
+from xfads.vi import DiagGaussainLik
 
 
 def test_smooth(dimensions, capsys):

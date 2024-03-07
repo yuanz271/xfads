@@ -2,8 +2,8 @@ from jax import numpy as jnp, random as jrnd
 from equinox import nn as enn
 import chex
 
-from bfs.distribution import MVN
-from bfs.vi import PoissonLik, elbo
+from xfads.distribution import MVN
+from xfads.vi import PoissonLik, elbo
 
 
 def test_poisson(dimensions):

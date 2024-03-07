@@ -1,9 +1,9 @@
 from jax import numpy as jnp, random as jrnd
 import chex
 import pytest
-from bfs.distribution import MVN
+from xfads.distribution import MVN
 
-from bfs.dynamics import GaussianStateNoise, Nonlinear, predict_moment, sample_expected_moment
+from xfads.dynamics import GaussianStateNoise, Nonlinear, predict_moment, sample_expected_moment
 
 
 def test_nonlinear(dimensions):

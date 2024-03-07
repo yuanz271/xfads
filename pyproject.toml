@@ -1,7 +1,7 @@
 [project]
-name = "bfs"
+name = "xfads"
 version = "0.1.0"
-description = "Add your description here"
+description = "eXponential FAmily Dynamical System"
 authors = [
     { name = "yuanz", email = "yuanz271@gmail.com" }
 ]

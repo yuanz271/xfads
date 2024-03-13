@@ -14,7 +14,7 @@ from sklearn.base import TransformerMixin
 from tqdm import trange
 
 from . import vi, smoothing
-from .dynamics import GaussianStateNoise, Nonlinear
+from .dynamics import GaussianStateNoise, Nonlinear, Linear
 from .vi import DiagGaussainLik, Likelihood
 from .distribution import DiagMVN, ExponentialFamily
 from .smoothing import Hyperparam
@@ -233,11 +233,13 @@ class XFADS(TransformerMixin):
         state_noise,
         *,
         approx: Type[ExponentialFamily] = DiagMVN,
+        dynamics: str = "linear",
         mc_size: int = 1,
         random_state: int = 0,
         max_em_iter: int = 1,
         max_inner_iter: int = 1,
         batch_size: int = 1,
+        enc_kwargs: dict = {},
     ) -> None:
         key: PRNGKeyArray = jrandom.PRNGKey(random_state)
         if isinstance(approx, str) and approx == "DiagMVN":
@@ -247,17 +249,23 @@ class XFADS(TransformerMixin):
         )
         self.opt = Opt(max_em_iter=max_em_iter, max_inner_iter=max_inner_iter, batch_size=batch_size)
         key, dkey, rkey, okey, bkey = jrandom.split(key, 5)
-        self.dynamics = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dkey)
+        if dynamics == "nonlinear":
+            self.dynamics = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dkey)
+        elif dynamics == "linear":
+            self.dynamics = Linear(state_dim, input_dim, key=dkey)
+        else:
+            raise ValueError(f"Unknown dynamics value: {dynamics}")
+
         self.statenoise = GaussianStateNoise(state_noise * jnp.ones(state_dim))
         self.likelihood = DiagGaussainLik(
             cov=emission_noise*jnp.ones(observation_dim),
             readout=enn.Linear(state_dim, observation_dim, key=rkey),
         )
         self.obs_encoder = smoothing.get_obs_encoder(
-            state_dim, observation_dim, hidden_size, n_layers, approx, key=okey
+            state_dim, observation_dim, enc_kwargs['hidden_size'], enc_kwargs['n_layers'], approx, key=okey
         )
         self.back_encoder = smoothing.get_back_encoder(
-            state_dim, hidden_size, n_layers, approx, key=bkey
+            state_dim, enc_kwargs['hidden_size'], enc_kwargs['n_layers'], approx, key=bkey
         )
 
     def fit(self, X: tuple[Array, Array], *, key: PRNGKeyArray) -> None:

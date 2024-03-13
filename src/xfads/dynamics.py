@@ -1,10 +1,10 @@
 from dataclasses import field
 
 import jax
-from jax import numpy as jnp, nn as jnn
+from jax import numpy as jnp, nn as jnn, random as jrandom
 from jaxtyping import Array, PRNGKeyArray
 import equinox as eqx
-from equinox import Module
+from equinox import Module, nn as enn
 
 from .nn import make_mlp, softplus_inverse
 from .distribution import ExponentialFamily
@@ -45,6 +45,25 @@ class Nonlinear(Module):
     def __call__(self, z: Array, u: Array) -> Array:
         x = jnp.concatenate((z, u), axis=-1)
         return z + self.forward(x)
+
+
+class Linear(Module):
+    autonomous: Module = field(init=False)
+    control: Module = field(init=False)
+
+    def __init__(
+        self,
+        state_dim: int,
+        input_dim: int,
+        *,
+        key: PRNGKeyArray,
+    ):
+        akey, ikey = jrandom.split(key)
+        self.autonomous = enn.Linear(state_dim, state_dim, key=akey)
+        self.control = enn.Linear(input_dim, state_dim, use_bias=False, key=akey)
+
+    def __call__(self, z: Array, u: Array) -> Array:
+        return self.autonomous(z) + self.control(u)
 
 
 def predict_moment(

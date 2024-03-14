@@ -7,7 +7,7 @@ import tensorflow_probability.substrates.jax.distributions as tfp
 import chex
 import equinox as eqx
 
-from .nn import softplus_inverse
+from .nn import WeightNorm, softplus_inverse
 from .distribution import MVN, DiagMVN, ExponentialFamily
 
 
@@ -31,11 +31,11 @@ class PoissonLik(Likelihood):
 
 class GaussainLik(Likelihood):
     unconstrained_cov: Array
-    readout: Module
+    readout: WeightNorm
 
     def __init__(self, cov, readout):
         self.unconstrained_cov = jnp.linalg.cholesky(cov)
-        self.readout = readout
+        self.readout = WeightNorm(readout)
 
     def cov(self):
         return self.unconstrained_cov @ self.unconstrained_cov.T 
@@ -43,21 +43,21 @@ class GaussainLik(Likelihood):
     def eloglik(self, key: PRNGKeyArray, moment: Array, y: Array, mc_size: int) -> Array:
         mean_z, cov_z = MVN.moment_to_canon(moment)
         mean_y = self.readout(mean_z)
-        loading = self.readout.weight  # left matrix
+        loading = self.readout.weight() # left matrix
         cov_y = loading @ cov_z @ loading.T + self.cov()
         ll = tfp.MultivariateNormalFullCovariance(mean_y, cov_y).log_prob(y)
         return ll
 
 
 class DiagGaussainLik(Likelihood):
-    unconstrained_cov: Array = eqx.field(static=True)
+    unconstrained_cov: Array = eqx.field(static=False)
     # _cov: Array = eqx.field(static=True)
-    readout: Module
+    readout: WeightNorm
     # dim: int
 
     def __init__(self, cov, readout):
         self.unconstrained_cov = softplus_inverse(cov)
-        self.readout = readout
+        self.readout = WeightNorm(readout)
         # self.dim = jnp.size(readout.bias)
         # self._cov = cov
 
@@ -69,10 +69,13 @@ class DiagGaussainLik(Likelihood):
     def eloglik(self, key: PRNGKeyArray, moment: Array, y: Array, mc_size: int) -> Array:
         mean_z, cov_z = DiagMVN.moment_to_canon(moment)
         mean_y = self.readout(mean_z)
-        loading = self.readout.weight  # left matrix
+        loading = self.readout.weight()  # left matrix
         cov_y = loading @ jnp.diag(cov_z) @ loading.T + jnp.diag(self.cov())
         ll = tfp.MultivariateNormalFullCovariance(mean_y, cov_y).log_prob(y)
         return ll
+
+    def set_static(self, static=True) -> None:
+        self.__dataclass_fields__['unconstrained_cov'].metadata = {'static': static}
 
 
 def elbo(key: PRNGKeyArray, moment: Array, moment_p: Array, y: Array, eloglik: Callable[..., Scalar], approx: Type[ExponentialFamily], *, mc_size: int) -> Scalar:

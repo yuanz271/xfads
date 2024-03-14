@@ -227,8 +227,6 @@ class XFADS(TransformerMixin):
         observation_dim,
         state_dim,
         input_dim,
-        hidden_size,
-        n_layers,
         emission_noise,
         state_noise,
         *,
@@ -240,6 +238,8 @@ class XFADS(TransformerMixin):
         max_inner_iter: int = 1,
         batch_size: int = 1,
         enc_kwargs: dict = {},
+        dyn_kwargs: dict = {},
+        static_params: str = "",
     ) -> None:
         key: PRNGKeyArray = jrandom.PRNGKey(random_state)
         if isinstance(approx, str) and approx == "DiagMVN":
@@ -250,7 +250,7 @@ class XFADS(TransformerMixin):
         self.opt = Opt(max_em_iter=max_em_iter, max_inner_iter=max_inner_iter, batch_size=batch_size)
         key, dkey, rkey, okey, bkey = jrandom.split(key, 5)
         if dynamics == "nonlinear":
-            self.dynamics = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dkey)
+            self.dynamics = Nonlinear(state_dim, input_dim, dyn_kwargs['hidden_size'], dyn_kwargs['n_layers'], key=dkey)
         elif dynamics == "linear":
             self.dynamics = Linear(state_dim, input_dim, key=dkey)
         else:
@@ -258,9 +258,13 @@ class XFADS(TransformerMixin):
 
         self.statenoise = GaussianStateNoise(state_noise * jnp.ones(state_dim))
         self.likelihood = DiagGaussainLik(
-            cov=emission_noise*jnp.ones(observation_dim),
+            cov=emission_noise * jnp.ones(observation_dim),
             readout=enn.Linear(state_dim, observation_dim, key=rkey),
         )
+
+        self.statenoise.set_static('s' in static_params)
+        self.likelihood.set_static('l' in static_params)
+
         self.obs_encoder = smoothing.get_obs_encoder(
             state_dim, observation_dim, enc_kwargs['hidden_size'], enc_kwargs['n_layers'], approx, key=okey
         )

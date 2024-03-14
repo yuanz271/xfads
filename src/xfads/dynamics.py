@@ -17,13 +17,16 @@ from .distribution import ExponentialFamily
 
 
 class GaussianStateNoise(Module):
-    unconstrained_cov: Array = eqx.field(static=True)
+    unconstrained_cov: Array = eqx.field(static=False)
     
     def __init__(self, cov):
         self.unconstrained_cov = softplus_inverse(cov)
 
     def cov(self) -> Array:
         return jnn.softplus(self.unconstrained_cov)
+    
+    def set_static(self, static=True) -> None:
+        self.__dataclass_fields__['unconstrained_cov'].metadata = {'static': static}
 
 
 class Nonlinear(Module):

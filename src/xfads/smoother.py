@@ -13,7 +13,7 @@ from equinox import Module, nn as enn
 from sklearn.base import TransformerMixin
 from tqdm import trange
 
-from . import vi, smoothing
+from . import vi, smoothing, distribution
 from .dynamics import GaussianStateNoise, Nonlinear, Linear
 from .vi import DiagGaussainLik, Likelihood
 from .distribution import DiagMVN, ExponentialFamily
@@ -242,8 +242,11 @@ class XFADS(TransformerMixin):
         static_params: str = "",
     ) -> None:
         key: PRNGKeyArray = jrandom.PRNGKey(random_state)
-        if isinstance(approx, str) and approx == "DiagMVN":
-            approx = DiagMVN
+        # if isinstance(approx, str) and approx == "DiagMVN":
+        #     approx = DiagMVN
+        
+        approx = getattr(distribution, approx, DiagMVN)
+
         self.hyperparam = Hyperparam(
             approx, state_dim, input_dim, observation_dim, mc_size
         )

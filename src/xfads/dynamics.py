@@ -1,5 +1,3 @@
-from dataclasses import field
-
 import jax
 from jax import numpy as jnp, nn as jnn, random as jrandom
 from jaxtyping import Array, PRNGKeyArray
@@ -30,17 +28,19 @@ class GaussianStateNoise(Module):
 
 
 class Nonlinear(Module):
-    forward: Module = field(init=False)
+    forward: Module = eqx.field(init=False)
 
     def __init__(
         self,
         state_dim: int,
         input_dim: int,
-        hidden_size: int,
-        n_layers: int,
         *,
         key: PRNGKeyArray,
+        kwargs: dict
     ):
+        hidden_size: int = kwargs['width']
+        n_layers: int = kwargs['depth']
+
         self.forward = make_mlp(
             state_dim + input_dim, state_dim, hidden_size, n_layers, key=key
         )
@@ -51,8 +51,8 @@ class Nonlinear(Module):
 
 
 class Linear(Module):
-    autonomous: Module = field(init=False)
-    control: Module = field(init=False)
+    autonomous: Module = eqx.field(init=False)
+    control: Module = eqx.field(init=False)
 
     def __init__(
         self,
@@ -60,6 +60,7 @@ class Linear(Module):
         input_dim: int,
         *,
         key: PRNGKeyArray,
+        kwargs: dict
     ):
         akey, ikey = jrandom.split(key)
         self.autonomous = enn.Linear(state_dim, state_dim, key=akey)
@@ -67,6 +68,23 @@ class Linear(Module):
 
     def __call__(self, z: Array, u: Array) -> Array:
         return self.autonomous(z) + self.control(u)
+
+
+class Diffusion(Module):
+    decay: float = eqx.field(static=True)
+
+    def __init__(
+        self,
+        state_dim: int,
+        input_dim: int,
+        *,
+        key: PRNGKeyArray,
+        kwargs: dict
+    ):
+        self.decay = 1.
+
+    def __call__(self, z: Array, u: Array) -> Array:
+        return z
 
 
 def predict_moment(

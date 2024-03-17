@@ -13,8 +13,8 @@ from equinox import Module, nn as enn
 from sklearn.base import TransformerMixin
 from tqdm import trange
 
-from . import vi, smoothing, distribution
-from .dynamics import GaussianStateNoise, Nonlinear, Linear
+from . import vi, smoothing, distribution, dynamics
+from .dynamics import Diffusion, GaussianStateNoise, Nonlinear, Linear
 from .vi import DiagGaussainLik, Likelihood
 from .distribution import DiagMVN, ExponentialFamily
 from .smoothing import Hyperparam
@@ -230,8 +230,8 @@ class XFADS(TransformerMixin):
         emission_noise,
         state_noise,
         *,
-        approx: Type[ExponentialFamily] = DiagMVN,
-        dynamics: str = "linear",
+        approx: str = "DiagMVN",
+        dyn_mod: str = "Diffusion",
         mc_size: int = 1,
         random_state: int = 0,
         max_em_iter: int = 1,
@@ -252,12 +252,9 @@ class XFADS(TransformerMixin):
         )
         self.opt = Opt(max_em_iter=max_em_iter, max_inner_iter=max_inner_iter, batch_size=batch_size)
         key, dkey, rkey, okey, bkey = jrandom.split(key, 5)
-        if dynamics == "nonlinear":
-            self.dynamics = Nonlinear(state_dim, input_dim, dyn_kwargs['hidden_size'], dyn_kwargs['n_layers'], key=dkey)
-        elif dynamics == "linear":
-            self.dynamics = Linear(state_dim, input_dim, key=dkey)
-        else:
-            raise ValueError(f"Unknown dynamics value: {dynamics}")
+        
+        dynamics_class = getattr(dynamics, dyn_mod, Diffusion)
+        self.dynamics = dynamics_class(state_dim, input_dim, key=dkey, kwargs=dyn_kwargs)
 
         self.statenoise = GaussianStateNoise(state_noise * jnp.ones(state_dim))
         self.likelihood = DiagGaussainLik(

@@ -1,4 +1,4 @@
-from jax import numpy as jnp, random as jrnd
+from jax import numpy as jnp, random as jrandom
 import chex
 import tensorflow_probability.substrates.jax.distributions as tfp
 

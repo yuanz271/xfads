@@ -20,10 +20,10 @@ def test_smooth(dimensions, capsys):
     n_layers: int = 2
     T: int = 100
 
-    f = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dyn_key)
+    f = Nonlinear(state_dim, input_dim, key=dyn_key, kwargs={'width': hidden_size, 'depth': n_layers})
 
-    obs_encoder = get_obs_encoder(state_dim, observation_dim, hidden_size, n_layers, key=obs_key)
-    back_encoder = get_back_encoder(state_dim, hidden_size, n_layers, key=back_key)
+    obs_encoder = get_obs_encoder(state_dim, observation_dim, hidden_size, n_layers, DiagMVN, key=obs_key)
+    back_encoder = get_back_encoder(state_dim, hidden_size, n_layers, DiagMVN, key=back_key)
     
     key, ykey, ukey, rkey, skey = jrandom.split(key, 5)
 

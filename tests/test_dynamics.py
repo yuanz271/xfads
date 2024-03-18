@@ -9,7 +9,9 @@ from xfads.dynamics import GaussianStateNoise, Nonlinear, predict_moment, sample
 def test_nonlinear(dimensions):
     key = jrnd.PRNGKey(0)
     state_dim, input_dim, observation_dim = dimensions
-    f = Nonlinear(state_dim, input_dim, 2, 2, key=key)
+    hidden_size = 2
+    n_layers = 2
+    f = Nonlinear(state_dim, input_dim, key=key, kwargs={'width': hidden_size, 'depth': n_layers})
     z = jrnd.normal(key, (2,))
     u = jrnd.normal(key, (2,))
     fz = f(z, u)
@@ -21,13 +23,13 @@ def test_predict_moment(dimensions):
     state_dim, input_dim, observation_dim = dimensions
     hidden_size = 2
     n_layers = 2
-    f = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=key)
+    f = Nonlinear(state_dim, input_dim, key=key, kwargs={'width': hidden_size, 'depth': n_layers})
     noise = GaussianStateNoise(jnp.eye(state_dim))
 
     z = jrnd.normal(key, (state_dim,))
     u = jrnd.normal(key, (input_dim,))
 
-    moment = predict_moment(f, noise, z, u, MVN)
+    moment = predict_moment(z, u, f, noise, MVN)
     chex.assert_shape(moment, (state_dim + state_dim * state_dim,))
 
 
@@ -36,12 +38,12 @@ def test_sample_expected_moment(dimensions):
     state_dim, input_dim, observation_dim = dimensions
     hidden_size: int = 2
     n_layers: int = 2
-    f = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=key)
+    f = Nonlinear(state_dim, input_dim, key=key, kwargs={'width': hidden_size, 'depth': n_layers})
     noise = GaussianStateNoise(jnp.eye(state_dim))
 
     z = jrnd.normal(key, (state_dim,))
     u = jrnd.normal(key, (input_dim,))
     
-    moment = predict_moment(f, noise, z, u, MVN)
-    moment = sample_expected_moment(key, f, noise, moment, u, MVN, 10)
+    moment = predict_moment(z, u, f, noise, MVN)
+    moment = sample_expected_moment(key, moment, u, f, noise, MVN, 10)
     chex.assert_shape(moment, (state_dim + state_dim * state_dim,))

@@ -6,8 +6,9 @@ import equinox as eqx
 from xfads.distribution import DiagMVN
 from xfads.dynamics import GaussianStateNoise, Nonlinear
 from xfads.smoothing import get_back_encoder, get_obs_encoder
-from xfads.smoother import XFADS, Opt, make_batch_elbo, make_batch_smoother, load_model, save_model, train
+from xfads.smoother import XFADS, load_model, save_model
 from xfads.smoothing import Hyperparam
+from xfads.trainer import Opt, make_batch_elbo, make_batch_smoother, train
 from xfads.vi import DiagGaussainLik
 
 
@@ -21,7 +22,7 @@ def test_train(dimensions, capsys):
     N: int = 10
     T: int = 100
 
-    f = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dyn_key)
+    f = Nonlinear(state_dim, input_dim, key=dyn_key, kwargs={'width': hidden_size, 'depth': n_layers})
 
     obs_encoder = get_obs_encoder(
         state_dim, observation_dim, hidden_size, n_layers, DiagMVN, key=obs_key
@@ -64,7 +65,7 @@ def test_batch_smoother(dimensions, capsys):
     N: int = 10
     T: int = 100
 
-    f = Nonlinear(state_dim, input_dim, hidden_size, n_layers, key=dyn_key)
+    f = Nonlinear(state_dim, input_dim, key=dyn_key, kwargs={'width': hidden_size, 'depth': n_layers})
 
     obs_encoder = get_obs_encoder(
         state_dim, observation_dim, hidden_size, n_layers, DiagMVN, key=obs_key
@@ -120,13 +121,16 @@ def test_xfads(dimensions, capsys):
     model_spec = dict(observation_dim=observation_dim,
         state_dim=state_dim,
         input_dim=input_dim,
-        hidden_size=hidden_size,
-        n_layers=n_layers,
         approx="DiagMVN",
+        dyn_mod="Nonlinear",
         mc_size=10,
         random_state=0,
+        emission_noise=1.,
+        state_noise=1.,
+        enc_kwargs={'width': hidden_size, 'depth': n_layers},
+        dyn_kwargs={'width': hidden_size, 'depth': n_layers},
     )
-    xfads = XFADS(observation_dim, state_dim, input_dim, hidden_size, n_layers)
+    xfads = XFADS(**model_spec)
 
     key, ykey, ukey, fkey, skey = jrandom.split(key, 5)
 

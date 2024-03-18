@@ -98,8 +98,8 @@ def loader(ys, us, batch_size, *, key):# -> Generator[tuple[Any, Any, KeyArray],
         yield ys[indices], us[indices], jrandom.fold_in(key, k)
 
 
-def batch_loss(m_modules, e_modules, y, u, key, hyperparam) -> Scalar:
-    dynamics, likelihood, statenoise, obs_encoder, back_encoder = m_modules + e_modules
+def batch_loss(modules, y, u, key, hyperparam) -> Scalar:
+    dynamics, statenoise, likelihood, obs_encoder, back_encoder = modules
 
     smooth = make_batch_smoother(
         dynamics,
@@ -138,22 +138,20 @@ def train_loop(modules, y, u, key, step, opt_state, opt):
     return total_loss, modules, opt_state
 
 
-def train(
+def train_em(
     y: Array,
     u: Array,
-    dynamics,
-    statenoise,
-    likelihood: Likelihood,
-    obs_encoder,
-    back_encoder,
-    hyperparam: Hyperparam,
+    model,
     *,
     key: PRNGKeyArray,
     opt: Opt,
 ) -> tuple:
     chex.assert_rank((y, u), 3)
 
-    m_modules = (dynamics, likelihood, statenoise)
+    (dynamics, statenoise, likelihood, obs_encoder, back_encoder) = model.get_modules()
+    hyperparam = model.hyperparam
+
+    m_modules = (dynamics, statenoise, likelihood)
     e_modules = (obs_encoder, back_encoder)
 
     optimizer_m, opt_state_mstep = make_optimizer(m_modules, opt)
@@ -161,11 +159,11 @@ def train(
 
     @eqx.filter_value_and_grad
     def eloss(e_modules, y, u, key) -> Scalar:
-        return batch_loss(m_modules, e_modules, y, u, key, hyperparam)
+        return batch_loss(m_modules + e_modules, y, u, key, hyperparam)
 
     @eqx.filter_value_and_grad
     def mloss(m_modules, y, u, key) -> Scalar:
-        return batch_loss(m_modules, e_modules, y, u, key, hyperparam)
+        return batch_loss(m_modules + e_modules, y, u, key, hyperparam)
 
     @eqx.filter_jit
     def estep(module, y, u, key, opt_state):
@@ -184,6 +182,7 @@ def train(
     key, em_key = jrandom.split(key)
     old_loss = jnp.inf
     terminate = False
+    opt.max_inner_iter = 1
     for i in (pbar := trange(opt.max_em_iter)):
         try:
             ekey, mkey = jrandom.split(jrandom.fold_in(em_key, i))
@@ -205,3 +204,53 @@ def train(
         old_loss = loss
 
     return m_modules + e_modules
+
+
+def train_joint(
+    y: Array,
+    u: Array,
+    model,
+    *,
+    key: PRNGKeyArray,
+    opt: Opt,
+) -> tuple:
+    chex.assert_rank((y, u), 3)
+
+    modules = model.get_modules()
+    hyperparam = model.hyperparam
+
+    optimizer_m, opt_state_mstep = make_optimizer(modules, opt)
+
+    @eqx.filter_value_and_grad
+    def mloss(modules, y, u, key) -> Scalar:
+        return batch_loss(modules, y, u, key, hyperparam)
+
+    @eqx.filter_jit
+    def mstep(modules, y, u, key, opt_state):
+        loss, grads = mloss(modules, y, u, key)
+        updates, opt_state = optimizer_m.update(grads, opt_state, modules)
+        modules = eqx.apply_updates(modules, updates)
+        return modules, opt_state, loss
+
+    key, em_key = jrandom.split(key)
+    old_loss = jnp.inf
+    terminate = False
+    for i in (pbar := trange(opt.max_em_iter)):
+        try:
+            mkey = jrandom.fold_in(em_key, i)
+
+            loss_m, modules, opt_state_mstep = train_loop(
+                modules, y, u, mkey, mstep, opt_state_mstep, opt
+            )
+            loss = loss_m.item()
+
+            chex.assert_tree_all_finite(loss)
+            pbar.set_postfix({"loss": f"{loss:.3f}"})
+        except KeyboardInterrupt:
+            terminate = True
+
+        if terminate or jnp.isclose(loss, old_loss):
+            break
+        old_loss = loss
+
+    return modules

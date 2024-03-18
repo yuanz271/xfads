@@ -1,3 +1,4 @@
+from tempfile import TemporaryDirectory
 from jax import numpy as jnp, random as jrandom
 from equinox import nn as enn
 import chex
@@ -8,51 +9,8 @@ from xfads.dynamics import GaussianStateNoise, Nonlinear
 from xfads.smoothing import get_back_encoder, get_obs_encoder
 from xfads.smoother import XFADS, load_model, save_model
 from xfads.smoothing import Hyperparam
-from xfads.trainer import Opt, make_batch_elbo, make_batch_smoother, train
+from xfads.trainer import Opt, make_batch_elbo, make_batch_smoother, train_em
 from xfads.vi import DiagGaussainLik
-
-
-def test_train(dimensions, capsys):
-    key = jrandom.PRNGKey(0)
-    key, dyn_key, obs_key, back_key = jrandom.split(key, 4)
-
-    state_dim, input_dim, observation_dim = dimensions
-    hidden_size: int = 2
-    n_layers: int = 2
-    N: int = 10
-    T: int = 100
-
-    f = Nonlinear(state_dim, input_dim, key=dyn_key, kwargs={'width': hidden_size, 'depth': n_layers})
-
-    obs_encoder = get_obs_encoder(
-        state_dim, observation_dim, hidden_size, n_layers, DiagMVN, key=obs_key
-    )
-    back_encoder = get_back_encoder(state_dim, hidden_size, n_layers, DiagMVN, key=back_key)
-
-    key, ykey, ukey, rkey, skey = jrandom.split(key, 5)
-
-    y = jrandom.normal(ykey, shape=(N, T, observation_dim))
-    u = jrandom.normal(ukey, shape=(N, T, input_dim))
-
-    hyperparam = Hyperparam(DiagMVN, state_dim, input_dim, observation_dim, mc_size=10)
-    statenoise = GaussianStateNoise(jnp.ones(state_dim))
-    linear_readout = enn.Linear(state_dim, observation_dim, key=rkey)
-    likelihood = DiagGaussainLik(cov=jnp.ones(observation_dim), readout=linear_readout)
-
-    opt = Opt(max_em_iter=10, batch_size=5)
-    with capsys.disabled():
-        train(
-            y,
-            u,
-            f,
-            statenoise,
-            likelihood,
-            obs_encoder,
-            back_encoder,
-            hyperparam=hyperparam,
-            key=key,
-            opt=opt,
-        )
 
 
 def test_batch_smoother(dimensions, capsys):
@@ -137,9 +95,10 @@ def test_xfads(dimensions, capsys):
     y = jrandom.normal(ykey, shape=(N, T, observation_dim))
     u = jrandom.normal(ukey, shape=(N, T, input_dim))
     
-    xfads.fit((y, u), key=fkey)
-
-    save_model("model.eqx", model_spec, xfads)
-    loaded_model = load_model("model.eqx")
+    xfads.fit((y, u), key=fkey, mode="joint")
+    
+    with TemporaryDirectory() as tmpdir:
+        save_model(f"{tmpdir}/model.eqx", model_spec, xfads)
+        loaded_model = load_model(f"{tmpdir}/model.eqx")
     
     chex.assert_trees_all_equal(eqx.filter(xfads.dynamics, eqx.is_array), eqx.filter(loaded_model.dynamics, eqx.is_array))

@@ -9,7 +9,7 @@ from sklearn.base import TransformerMixin
 
 
 from . import smoothing, distribution, dynamics
-from .trainer import make_batch_smoother, train, Opt
+from .trainer import make_batch_smoother, train_em, Opt, train_joint
 from .dynamics import Diffusion, GaussianStateNoise
 from .vi import DiagGaussainLik, Likelihood
 from .distribution import DiagMVN
@@ -48,17 +48,23 @@ class XFADS(TransformerMixin):
         key: PRNGKeyArray = jrandom.PRNGKey(random_state)
         # if isinstance(approx, str) and approx == "DiagMVN":
         #     approx = DiagMVN
-        
+
         approx = getattr(distribution, approx, DiagMVN)
 
         self.hyperparam = Hyperparam(
             approx, state_dim, input_dim, observation_dim, mc_size
         )
-        self.opt = Opt(max_em_iter=max_em_iter, max_inner_iter=max_inner_iter, batch_size=batch_size)
+        self.opt = Opt(
+            max_em_iter=max_em_iter,
+            max_inner_iter=max_inner_iter,
+            batch_size=batch_size,
+        )
         key, dkey, rkey, okey, bkey = jrandom.split(key, 5)
-        
+
         dynamics_class = getattr(dynamics, dyn_mod, Diffusion)
-        self.dynamics = dynamics_class(state_dim, input_dim, key=dkey, kwargs=dyn_kwargs)
+        self.dynamics = dynamics_class(
+            state_dim, input_dim, key=dkey, kwargs=dyn_kwargs
+        )
 
         self.statenoise = GaussianStateNoise(state_noise * jnp.ones(state_dim))
         self.likelihood = DiagGaussainLik(
@@ -66,35 +72,36 @@ class XFADS(TransformerMixin):
             readout=enn.Linear(state_dim, observation_dim, key=rkey),
         )
 
-        self.statenoise.set_static('s' in static_params)
-        self.likelihood.set_static('l' in static_params)
+        self.statenoise.set_static("s" in static_params)
+        self.likelihood.set_static("l" in static_params)
 
         self.obs_encoder = smoothing.get_obs_encoder(
-            state_dim, observation_dim, enc_kwargs['width'], enc_kwargs['depth'], approx, key=okey
+            state_dim,
+            observation_dim,
+            enc_kwargs["width"],
+            enc_kwargs["depth"],
+            approx,
+            key=okey,
         )
         self.back_encoder = smoothing.get_back_encoder(
-            state_dim, enc_kwargs['width'], enc_kwargs['depth'], approx, key=bkey
+            state_dim, enc_kwargs["width"], enc_kwargs["depth"], approx, key=bkey
         )
 
-    def fit(self, X: tuple[Array, Array], *, key: PRNGKeyArray) -> None:
+    def fit(self, X: tuple[Array, Array], *, key: PRNGKeyArray, mode="joint") -> None:
+        if mode == "em":
+            train_func = train_em
+        else:
+            train_func = train_joint
+
         y, u = X
-        (
-            self.dynamics,
-            self.likelihood,
-            self.statenoise,
-            self.obs_encoder,
-            self.back_encoder,
-        ) = train(
-            y,
-            u,
-            self.dynamics,
-            self.statenoise,
-            self.likelihood,
-            self.obs_encoder,
-            self.back_encoder,
-            self.hyperparam,
-            key=key,
-            opt=self.opt,
+        self.set_modules(
+            train_func(
+                y,
+                u,
+                self,
+                key=key,
+                opt=self.opt,
+            )
         )
 
     def transform(
@@ -103,33 +110,35 @@ class XFADS(TransformerMixin):
         y, u = X
 
         smooth = make_batch_smoother(
+            *self.get_modules(),
+            self.hyperparam,
+        )
+        return smooth(y, u, key)
+
+    def get_modules(self) -> tuple:
+        return self.dynamics, self.statenoise, self.likelihood, self.obs_encoder, self.back_encoder
+        
+    def set_modules(self, modules: tuple) -> None:
+        (
             self.dynamics,
             self.statenoise,
             self.likelihood,
             self.obs_encoder,
             self.back_encoder,
-            self.hyperparam,
-        )
-        return smooth(y, u, key)
-    
-    def modules(self):
-        return self.dynamics, self.statenoise, self.likelihood, self.obs_encoder, self.back_encoder
-    
-    def set_modules(self, modules):
-        self.dynamics, self.statenoise, self.likelihood, self.obs_encoder, self.back_encoder = modules
+        ) = modules
 
 
 def save_model(file, spec, model: XFADS):
     with open(file, "wb") as f:
         spec = json.dumps(spec)
         f.write((spec + "\n").encode())
-        eqx.tree_serialise_leaves(f, model.modules())
+        eqx.tree_serialise_leaves(f, model.get_modules())
 
 
 def load_model(file) -> XFADS:
     with open(file, "rb") as f:
         kwargs = json.loads(f.readline().decode())
         model = XFADS(**kwargs)
-        modules = eqx.tree_deserialise_leaves(f, model.modules())
+        modules = eqx.tree_deserialise_leaves(f, model.get_modules())
         model.set_modules(modules)
         return model

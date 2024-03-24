@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 from jaxtyping import PRNGKeyArray, Array, Scalar
 import jax
 from jax import nn as jnn, random as jrandom, numpy as jnp
@@ -7,7 +7,15 @@ from equinox import nn as enn, Module, field, tree_at
 from equinox.nn import Linear
 
 
-def make_mlp(in_size, out_size, hidden_size, n_layers, *, key: PRNGKeyArray, activation: Callable=jnn.silu):
+def make_mlp(
+    in_size,
+    out_size,
+    hidden_size,
+    n_layers,
+    *,
+    key: PRNGKeyArray,
+    activation: Callable = jnn.silu,
+):
     keys = jrandom.split(key, n_layers + 1)
     layers = []
     for i in range(n_layers):
@@ -59,15 +67,26 @@ class WeightNorm(Module):
     def weight(self) -> Array:
         w = getattr(self.layer, self.weight_name)
         weight = w / self._norm(w)
-        
+
         return weight
-    
+
     @jax.named_scope("xfads.nn.WeightNorm")
     def __call__(self, x: Array) -> Array:
         """
         :param x: JAX Array
         """
         weight = self.weight()
-        layer = tree_at(lambda layer: getattr(layer, self.weight_name), self.layer, weight)
+        layer = tree_at(
+            lambda layer: getattr(layer, self.weight_name), self.layer, weight
+        )
         return layer(x)
-    
+
+
+class Constant(Module):
+    const: Array
+
+    def __init__(self, out_features: int, fill_value: float = 0.0) -> None:
+        self.const = jnp.full((out_features,), fill_value=fill_value)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Array:
+        return self.const

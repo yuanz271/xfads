@@ -1,33 +1,39 @@
-from jax import numpy as jnp, random as jrnd
+from jax import numpy as jnp, random as jrnd, random as jrandom
 from equinox import nn as enn
 import chex
 
-from xfads.distribution import MVN
-from xfads.vi import PoissonLik, elbo
+from xfads.distribution import MVN, DiagMVN
+from xfads.vi import DiagMVNLik, PoissonLik, elbo, make_batch_elbo
 
 
-def test_poisson(dimensions):
+def test_poisson(spec):
     key = jrnd.PRNGKey(0)
-    state_dim, input_dim, observation_dim = dimensions
+    state_dim = spec['state_dim']
+    neural_dim = spec['neural_dim']
+    approx = MVN
 
-    y = jrnd.poisson(key, jnp.ones(observation_dim))
-    chex.assert_shape(y, (observation_dim,))
-    readout = enn.Linear(state_dim, observation_dim, key=key)
+    y = jrnd.poisson(key, jnp.ones(neural_dim))
+    chex.assert_shape(y, (neural_dim,))
+    readout = enn.Linear(state_dim, neural_dim, key=key)
     lik = PoissonLik(readout)
     
     m = jnp.ones(state_dim)
     cov = jnp.eye(state_dim)
-    moment = MVN.canon_to_moment(m, cov)
+    moment = approx.canon_to_moment(m, cov)
     chex.assert_shape(moment, (state_dim * state_dim + state_dim,))
     
-    ell = lik.eloglik(key, moment, y, mc_size=10)
+    covariate_predict = jnp.zeros_like(y)
+
+    ell = lik.eloglik(key, moment, covariate_predict, y, approx, mc_size=10)
     chex.assert_shape(ell, y.shape)
     chex.assert_tree_all_finite(ell)
     
 
-def test_elbo(dimensions):
+def test_elbo(spec):
     key = jrnd.PRNGKey(0)
-    state_dim, input_dim, observation_dim = dimensions
+
+    state_dim = spec['state_dim']
+    neural_dim = spec['neural_dim']
 
     m1 = jnp.ones(state_dim)
     cov1 = jnp.eye(state_dim)
@@ -37,9 +43,31 @@ def test_elbo(dimensions):
     moment1 = MVN.canon_to_moment(m1, cov1)
     moment2 = MVN.canon_to_moment(m2, cov2)
 
-    y = jrnd.poisson(key, jnp.ones(observation_dim))
-    readout = enn.Linear(state_dim, observation_dim, key=key)
+    y = jrnd.poisson(key, jnp.ones(neural_dim))
+    covariate_predict = jnp.ones(neural_dim)
+    readout = enn.Linear(state_dim, neural_dim, key=key)
     lik = PoissonLik(readout)
 
-    l = elbo(key, moment1, moment2, y, lik.eloglik, MVN, mc_size=10)
+    l = elbo(key, moment1, moment2, covariate_predict, y, lik.eloglik, MVN, mc_size=10)
     chex.assert_tree_all_finite(l)
+
+
+def test_batch_elbo(spec, capsys):
+    key = jrandom.PRNGKey(0)
+    key, rkey, ykey, ykey, ukey, skey, pkey = jrandom.split(key, 7)
+
+    N: int = 10
+    T: int = 100
+
+    linear_readout = enn.Linear(spec['state_dim'], spec['neural_dim'], key=rkey)
+    likelihood = DiagMVNLik(cov=jnp.ones(spec['neural_dim']), readout=linear_readout)
+
+    elbo = make_batch_elbo(likelihood.eloglik, DiagMVN, mc_size=10)
+    ys = jrandom.normal(ykey, (N, T, spec['neural_dim']))
+    covariate_predict = jrandom.normal(ykey, (N, T, spec['neural_dim']))
+    us = jrandom.normal(ukey, (N, T, spec['input_dim']))
+    moment_s = jrandom.uniform(skey, (N, T, spec['state_dim'] * 2))
+    moment_p = jrandom.uniform(pkey, (N, T, spec['state_dim'] * 2))
+
+    with capsys.disabled():
+        L = elbo(key, moment_s, moment_p, covariate_predict, ys)

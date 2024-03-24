@@ -4,7 +4,7 @@ from jaxtyping import Array, PRNGKeyArray
 import equinox as eqx
 from equinox import Module, nn as enn
 
-from .nn import make_mlp, softplus_inverse
+from .nn import Constant, make_mlp, softplus_inverse
 from .distribution import ExponentialFamily
 
 # TODO: decouple noise and transition
@@ -14,7 +14,7 @@ from .distribution import ExponentialFamily
 # Never nest modules
 
 
-class GaussianStateNoise(Module):
+class DiagMVNStateNoise(Module):
     unconstrained_cov: Array = eqx.field(static=False)
     
     def __init__(self, cov):
@@ -64,7 +64,7 @@ class Linear(Module):
     ):
         akey, ikey = jrandom.split(key)
         self.autonomous = enn.Linear(state_dim, state_dim, key=akey)
-        self.control = enn.Linear(input_dim, state_dim, use_bias=False, key=akey)
+        self.control = enn.Linear(input_dim, state_dim, use_bias=False, key=akey) if input_dim > 0 else Constant(state_dim, 0.)
 
     def __call__(self, z: Array, u: Array) -> Array:
         return self.autonomous(z) + self.control(u)
@@ -88,7 +88,7 @@ class Diffusion(Module):
 
 
 def predict_moment(
-    z: Array, u: Array, forward, noise: GaussianStateNoise, approx: ExponentialFamily
+    z: Array, u: Array, forward, noise: DiagMVNStateNoise, approx: ExponentialFamily
 ) -> Array:
     """mu[t](z[t-1])"""
     ztp1 = forward(z, u)
@@ -101,7 +101,7 @@ def sample_expected_moment(
     moment: Array,
     u: Array,
     forward,
-    noise: GaussianStateNoise,
+    noise: DiagMVNStateNoise,
     approx: ExponentialFamily,
     mc_size: int,
 ) -> Array:

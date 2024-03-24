@@ -60,13 +60,23 @@ class MVNMixin:
 class MVN(ExponentialFamily, MVNMixin):
     @classmethod
     def natural_to_moment(cls, natural: Array):
-        print("This is Gaussian natural to mean")
-        # raise NotImplementedError()
+        n = jnp.size(natural, 0)
+        m = cls.variable_size(n)
+        nat1, nat2 = jnp.split(natural, [m], axis=-1)
+        precision = -2 * nat2
+        mean = jnp.linalg.solve(precision, nat1)
+        cov = jnp.linalg.inv(precision)
+        moment = cls.canon_to_moment(mean, cov)
+        return moment
 
     @classmethod
     def moment_to_natural(cls, moment: Array):
-        print("This is Gaussian mean to natural")
-        # raise NotImplementedError()
+        mean, cov = cls.moment_to_canon(moment)
+        precision = jnp.linalg.inv(cov)
+        nat2 = -0.5 * precision
+        nat1 = jnp.linalg.solve(cov, mean)
+        natural = jnp.concatenate((nat1, nat2), axis=-1)
+        return natural
 
     @classmethod
     def sample_by_moment(cls, key: PRNGKeyArray, moment: Array, mc_size: int) -> Array:
@@ -75,16 +85,20 @@ class MVN(ExponentialFamily, MVNMixin):
 
     @classmethod
     def moment_to_canon(cls, moment: Array) -> tuple[Array, Array]:
-        # n: size of vectorized mean param
-        # m: size of random variable
-        # n = m + m*m
-        # m = (sqrt(1 + 4n) - 1) / 2. See doc for simpler solution m = floor(sqrt(n)).
         n = jnp.size(moment, 0)
-        m = int(jnp.sqrt(n))
+        m = cls.variable_size(n)
         mean, mmpcov = jnp.split(moment, [m], axis=-1)
         mmpcov = jnp.reshape(mmpcov, (m, m))
         cov = mmpcov - jnp.outer(mean, mean)
         return mean, cov
+    
+    @classmethod
+    def variable_size(cls, moment_size: int) -> int:
+        # n: size of vectorized mean param
+        # m: size of random variable
+        # n = m + m*m
+        # m = (sqrt(1 + 4n) - 1) / 2. See doc for simpler solution m = floor(sqrt(n)).
+        return int(jnp.sqrt(moment_size))
 
     @classmethod
     def canon_to_moment(cls, mean: Array, cov: Array) -> Array:

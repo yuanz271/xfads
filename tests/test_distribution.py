@@ -1,4 +1,4 @@
-from jax import numpy as jnp, random as jrandom
+from jax import numpy as jnp
 import chex
 import tensorflow_probability.substrates.jax.distributions as tfp
 
@@ -7,7 +7,6 @@ from xfads.distribution import MVN, DiagMVN
 
 def test_mvn(spec):
     state_dim = spec['state_dim']
-    input_dim = spec['input_dim']    
     
     m1 = jnp.ones(state_dim)
     cov1 = jnp.eye(state_dim)

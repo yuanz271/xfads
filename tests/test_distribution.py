@@ -5,8 +5,10 @@ import tensorflow_probability.substrates.jax.distributions as tfp
 from xfads.distribution import MVN, DiagMVN
 
 
-def test_mvn(dimensions):
-    state_dim, input_dim, observation_dim = dimensions
+def test_mvn(spec):
+    state_dim = spec['state_dim']
+    input_dim = spec['input_dim']    
+    
     m1 = jnp.ones(state_dim)
     cov1 = jnp.eye(state_dim)
     m2 = jnp.zeros(state_dim)
@@ -18,8 +20,9 @@ def test_mvn(dimensions):
     chex.assert_tree_all_finite(kl)
 
 
-def test_diagmvn(dimensions):
-    state_dim, input_dim, observation_dim = dimensions
+def test_diagmvn(spec):
+    state_dim = spec['state_dim']
+
     m1 = jnp.ones(state_dim)
     cov1 = jnp.ones(state_dim)
     m2 = jnp.zeros(state_dim)
@@ -36,8 +39,9 @@ def test_diagmvn(dimensions):
     chex.assert_tree_all_finite(kl)
 
 
-def test_reparameterization(dimensions):
-    state_dim, input_dim, observation_dim = dimensions
+def test_reparameterization(spec):
+    state_dim = spec['state_dim']
+    
     m1 = jnp.ones(state_dim)
     cov1 = jnp.eye(state_dim)
     assert tfp.MultivariateNormalFullCovariance(m1, cov1).reparameterization_type == tfp.FULLY_REPARAMETERIZED

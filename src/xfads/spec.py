@@ -28,6 +28,7 @@ class NeuralModelSpec(TypedDict):
 
 
 class OptSpec(TypedDict):
+    mode: str
     max_inner_iter: int
     max_outer_iter: int
     learning_rate: float

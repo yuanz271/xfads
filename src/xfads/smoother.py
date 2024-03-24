@@ -130,8 +130,13 @@ class XFADS(TransformerMixin):
         sq = np.random.SeedSequence(self.seed)
         _, fit_seed = sq.generate_state(2)
         key = jrandom.PRNGKey(fit_seed)
+        
+        if self.opt.mode == "joint":
+            train = trainer.train_joint
+        else:
+            train = trainer.train_em
 
-        self.modules = trainer.train_joint(
+        self.modules = train(
             *self._check_array(y, u, x),
             self,
             key=key,

@@ -8,16 +8,17 @@ from xfads.spec import ModelSpec
 
 
 def test_xfads(spec: ModelSpec, capsys):
-    N: int = 10
+    N: int = 100
     T: int = 100
 
     xfads = XFADS(**spec)
 
     y = jrandom.normal(key=jrandom.PRNGKey(0), shape=(N, T, spec['neural_dim']))
-    u = jnp.zeros((N, T, spec['input_dim']))
+    u = jrandom.normal(key=jrandom.PRNGKey(0), shape=(N, T, spec['input_dim']))
     x = jnp.zeros((N, T, spec['covariate_dim']))
 
-    xfads.fit(y, u, x)
+    with capsys.disabled():
+        xfads.fit(y, u, x)
 
     with TemporaryDirectory() as tmpdir:
         xfads.save_model(f"{tmpdir}/model.eqx")

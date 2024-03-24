@@ -9,7 +9,7 @@ import chex
 import optax
 import equinox as eqx
 
-from . import smoothing, vi
+from . import smoothing, vi, util
 
 
 @dataclass
@@ -105,8 +105,8 @@ def train_em(
     modules = model.modules
     hyperparam = model.hyperparam
 
-    m_modules = dict(dynamics=modules['dynamics'], state_noise=modules['state_noise'], likelihood=modules['likelihood'], covariate=modules['covariate'])
-    e_modules = dict(obs_encoder=modules['obs_encoder'], back_encoder=modules['back_encoder'])
+    m_modules = util.subdict(modules, ['dynamics', 'state_noise', 'likelihood', 'covariate'])
+    e_modules = util.subdict(modules, ['obs_encoder', 'back_encoder'])
 
     optimizer_m, opt_state_mstep = make_optimizer(m_modules, opt)
     optimizer_e, opt_state_estep = make_optimizer(e_modules, opt)

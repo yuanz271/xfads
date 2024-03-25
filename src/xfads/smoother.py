@@ -87,7 +87,7 @@ class XFADS(TransformerMixin):
                 cov=jnp.full((neural_dim,), fill_value=lik_spec["emission_noise"]),
                 readout=enn.Linear(state_dim, neural_dim, key=likelihood_key),
             ),
-            obs_encoder=smoothing.get_obs_encoder(
+            obs_encoder=smoothing.get_neural_to_state(
                 state_dim,
                 neural_dim,
                 approx,

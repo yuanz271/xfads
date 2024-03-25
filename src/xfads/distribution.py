@@ -2,7 +2,7 @@
 Approximate distributions
 """
 from abc import ABCMeta, abstractmethod
-from jax import numpy as jnp, random as jrandom
+from jax import numpy as jnp, random as jrandom, nn as jnn
 from jaxtyping import Array, Scalar, PRNGKeyArray
 import tensorflow_probability.substrates.jax.distributions as tfp
 
@@ -39,6 +39,11 @@ class ExponentialFamily(metaclass=ABCMeta):
     def kl(cls, moment1: Array, moment2: Array) -> Scalar:
         pass
 
+    @classmethod
+    @abstractmethod
+    def constrain_natural(cls, unconstrained: Array) -> Array:
+        pass
+
 
 class MVNMixin:
     @classmethod
@@ -60,7 +65,7 @@ class MVNMixin:
 class MVN(ExponentialFamily, MVNMixin):
     @classmethod
     def natural_to_moment(cls, natural: Array):
-        n = jnp.size(natural, 0)
+        n = jnp.size(natural, -1)
         m = cls.variable_size(n)
         nat1, nat2 = jnp.split(natural, [m], axis=-1)
         precision = -2 * nat2
@@ -85,7 +90,7 @@ class MVN(ExponentialFamily, MVNMixin):
 
     @classmethod
     def moment_to_canon(cls, moment: Array) -> tuple[Array, Array]:
-        n = jnp.size(moment, 0)
+        n = jnp.size(moment, -1)
         m = cls.variable_size(n)
         mean, mmpcov = jnp.split(moment, [m], axis=-1)
         mmpcov = jnp.reshape(mmpcov, (m, m))
@@ -120,6 +125,16 @@ class MVN(ExponentialFamily, MVNMixin):
     @classmethod
     def full_cov(cls, cov: Array) -> Array:
         return cov
+    
+    @classmethod
+    def constrain_natural(cls, unconstrained: Array) -> Array:
+        n = jnp.size(unconstrained, -1)
+        m = cls.variable_size(n)
+        nat1, nat2 = jnp.split(unconstrained, [m], axis=-1)
+        nat2 = jnp.reshape(nat2, (m, m))
+        nat2 = - nat2 @ nat2.mT
+        nat2 = nat2.flatten()
+        return jnp.concatenate((nat1, nat2), axis=-1)
 
 
 class DiagMVN(ExponentialFamily, MVNMixin):
@@ -165,3 +180,9 @@ class DiagMVN(ExponentialFamily, MVNMixin):
     @classmethod
     def full_cov(cls, cov: Array) -> Array:
         return jnp.diag(cov)
+
+    @classmethod
+    def constrain_natural(cls, unconstrained: Array) -> Array:
+        nat1, nat2 = jnp.split(unconstrained, 2, axis=-1)
+        nat2 = -jnn.softplus(nat2)
+        return jnp.concatenate((nat1, nat2), axis=-1)

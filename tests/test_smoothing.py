@@ -2,7 +2,7 @@ from jax import numpy as jnp, random as jrandom
 
 from xfads.distribution import DiagMVN
 from xfads.dynamics import DiagMVNStateNoise, Nonlinear
-from xfads.smoothing import get_back_encoder, get_obs_encoder, smooth
+from xfads.smoothing import get_back_encoder, get_neural_to_state, smooth
 from xfads.smoothing import Hyperparam
 
 
@@ -18,7 +18,7 @@ def test_smooth(spec, capsys):
 
     f = Nonlinear(state_dim, input_dim, key=dyn_key, kwargs=spec['dyn_spec'])
 
-    obs_encoder = get_obs_encoder(state_dim, neural_dim, DiagMVN, key=obs_key, **spec['enc_spec'])
+    obs_encoder = get_neural_to_state(state_dim, neural_dim, DiagMVN, key=obs_key, **spec['enc_spec'])
     back_encoder = get_back_encoder(state_dim, DiagMVN, key=back_key, **spec['enc_spec'])
     
     key, ykey, ukey, rkey, skey = jrandom.split(key, 5)

@@ -5,7 +5,7 @@ from functools import partial
 import jax
 from jax import numpy as jnp, random as jrandom
 from tqdm import trange
-from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
+from jaxtyping import Array, PRNGKeyArray, Scalar
 import chex
 import optax
 import equinox as eqx
@@ -72,7 +72,7 @@ def batch_loss(modules, y, u, x, key, hyperparam) -> Scalar:
 
 def train_loop(trainable_modules, static_modules, y, u, x, key, step, opt_state, opt):
     old_loss = jnp.inf
-    for i in range(opt.max_inner_iter):
+    for i in (pbar := trange(opt.max_inner_iter, leave=False)):
         key_i = jrandom.fold_in(key, i)
         total_loss = 0.
         n_minibatch = 0
@@ -84,7 +84,8 @@ def train_loop(trainable_modules, static_modules, y, u, x, key, step, opt_state,
             total_loss += loss
             n_minibatch += 1
         total_loss = total_loss / max(n_minibatch, 1)
-
+        pbar.set_postfix({"loss": f"{total_loss:.3f}"})
+        
         if jnp.isclose(total_loss, old_loss):
             break
 

@@ -48,8 +48,8 @@ def test_elbo(spec):
     readout = enn.Linear(state_dim, neural_dim, key=key)
     lik = PoissonLik(readout)
 
-    l = elbo(key, moment1, moment2, covariate_predict, y, lik.eloglik, MVN, mc_size=10)
-    chex.assert_tree_all_finite(l)
+    val = elbo(key, moment1, moment2, covariate_predict, y, lik.eloglik, MVN, mc_size=10)
+    chex.assert_tree_all_finite(val)
 
 
 def test_batch_elbo(spec, capsys):
@@ -65,9 +65,8 @@ def test_batch_elbo(spec, capsys):
     elbo = make_batch_elbo(likelihood.eloglik, DiagMVN, mc_size=10)
     ys = jrandom.normal(ykey, (N, T, spec['neural_dim']))
     covariate_predict = jrandom.normal(ykey, (N, T, spec['neural_dim']))
-    us = jrandom.normal(ukey, (N, T, spec['input_dim']))
     moment_s = jrandom.uniform(skey, (N, T, spec['state_dim'] * 2))
     moment_p = jrandom.uniform(pkey, (N, T, spec['state_dim'] * 2))
 
     with capsys.disabled():
-        L = elbo(key, moment_s, moment_p, covariate_predict, ys)
+        elbo(key, moment_s, moment_p, covariate_predict, ys)

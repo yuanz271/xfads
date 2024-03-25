@@ -15,7 +15,7 @@ from .distribution import ExponentialFamily
 from .nn import make_mlp
 
 
-def get_obs_encoder(
+def get_neural_to_state(
     state_dim: int,
     neural_dim: int,
     approx: Type[ExponentialFamily],
@@ -44,10 +44,10 @@ def get_back_encoder(
     )
 
 
-def _constrained_natural(unconstrained):
-    nat1, nat2 = jnp.split(unconstrained, 2, axis=-1)
-    nat2 = -jnn.softplus(nat2)
-    return jnp.concatenate((nat1, nat2), axis=-1)
+# def _constrained_diagmvn_natural(unconstrained):
+#     nat1, nat2 = jnp.split(unconstrained, 2, axis=-1)
+#     nat2 = -jnn.softplus(nat2)
+#     return jnp.concatenate((nat1, nat2), axis=-1)
 
 
 @dataclass
@@ -71,7 +71,7 @@ def smooth(
     hyperparam: Hyperparam,
 ) -> tuple[Array, Array]:
     approx = hyperparam.approx
-    nature_y = _constrained_natural(jax.vmap(obs_encoder)(y))
+    nature_y = jax.vmap(lambda x: approx.constrain_natural(obs_encoder(x)))(y)
     nature_f_1 = nature_y[0]
     moment_f_1 = approx.natural_to_moment(nature_f_1)
 
@@ -99,7 +99,7 @@ def smooth(
         subkey, key_t = jrandom.split(key, 2)
         nature_y_t, nature_f_t = z
 
-        update = _constrained_natural(
+        update = approx.constrain_natural(
             back_encoder(jnp.concatenate((nature_y_t, nature_s_tp1), axis=-1))
         )
         nature_s_t = nature_f_t + update

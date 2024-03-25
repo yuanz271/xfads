@@ -17,7 +17,7 @@ def spec():
         lik_spec={"emission_noise": 10.0},
         enc_spec={"depth": 2, "width": 2},
         opt_spec={
-            "mode": "joint",
+            "mode": "em",
             "max_inner_iter": 10,
             "max_outer_iter": 10,
             "learning_rate": 1e-3,

@@ -10,18 +10,18 @@ from equinox.nn import Linear
 def make_mlp(
     in_size,
     out_size,
-    hidden_size,
-    n_layers,
+    width,
+    depth,
     *,
     key: PRNGKeyArray,
     activation: Callable = jnn.silu,
 ):
-    keys = jrandom.split(key, n_layers + 1)
+    keys = jrandom.split(key, depth + 1)
     layers = []
-    for i in range(n_layers):
-        layers.append(enn.Linear(in_size, hidden_size, key=keys[i]))
+    for i in range(depth):
+        layers.append(enn.Linear(in_size, width, key=keys[i]))
         layers.append(enn.Lambda(activation))
-        in_size = hidden_size
+        in_size = width
     layers.append(enn.Linear(in_size, out_size, key=keys[-1]))
     return enn.Sequential(layers)
 

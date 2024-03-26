@@ -2,6 +2,8 @@
 Approximate distributions
 """
 from abc import ABCMeta, abstractmethod
+import math
+
 from jax import numpy as jnp, random as jrandom, nn as jnn
 from jaxtyping import Array, Scalar, PRNGKeyArray
 import tensorflow_probability.substrates.jax.distributions as tfp
@@ -65,10 +67,11 @@ class MVNMixin:
 class MVN(ExponentialFamily, MVNMixin):
     @classmethod
     def natural_to_moment(cls, natural: Array):
-        n = jnp.size(natural, -1)
+        n = jnp.size(natural)
         m = cls.variable_size(n)
-        nat1, nat2 = jnp.split(natural, [m], axis=-1)
-        precision = -2 * nat2
+        nat1, nat2 = jnp.split(natural, [m])
+        flat_precision = -2 * nat2
+        precision =jnp.reshape(flat_precision, (m, m))
         mean = jnp.linalg.solve(precision, nat1)
         cov = jnp.linalg.inv(precision)
         moment = cls.canon_to_moment(mean, cov)
@@ -79,8 +82,9 @@ class MVN(ExponentialFamily, MVNMixin):
         mean, cov = cls.moment_to_canon(moment)
         precision = jnp.linalg.inv(cov)
         nat2 = -0.5 * precision
+        flat_nat2 = nat2.flatten()
         nat1 = jnp.linalg.solve(cov, mean)
-        natural = jnp.concatenate((nat1, nat2), axis=-1)
+        natural = jnp.concatenate((nat1, flat_nat2))
         return natural
 
     @classmethod
@@ -90,11 +94,10 @@ class MVN(ExponentialFamily, MVNMixin):
 
     @classmethod
     def moment_to_canon(cls, moment: Array) -> tuple[Array, Array]:
-        n = jnp.size(moment, -1)
+        n = jnp.size(moment)
         m = cls.variable_size(n)
-        mean, mmpcov = jnp.split(moment, [m], axis=-1)
-        mmpcov = jnp.reshape(mmpcov, (m, m))
-        cov = mmpcov - jnp.outer(mean, mean)
+        mean, flat_cov = jnp.split(moment, [m])
+        cov = jnp.reshape(flat_cov, (m, m))
         return mean, cov
     
     @classmethod
@@ -103,13 +106,14 @@ class MVN(ExponentialFamily, MVNMixin):
         # m: size of random variable
         # n = m + m*m
         # m = (sqrt(1 + 4n) - 1) / 2. See doc for simpler solution m = floor(sqrt(n)).
-        return int(jnp.sqrt(moment_size))
+        return int(math.sqrt(moment_size))
 
     @classmethod
     def canon_to_moment(cls, mean: Array, cov: Array) -> Array:
-        mmpcov = jnp.outer(mean, mean) + cov
-        mmpcov = mmpcov.flatten()
-        moment = jnp.concatenate((mean, mmpcov), axis=-1)
+        if cov.shape == mean.shape:
+            cov = jnp.diag(cov)
+        flat_cov = cov.flatten()
+        moment = jnp.concatenate((mean, flat_cov))
         return moment
     
     @classmethod
@@ -128,13 +132,13 @@ class MVN(ExponentialFamily, MVNMixin):
     
     @classmethod
     def constrain_natural(cls, unconstrained: Array) -> Array:
-        n = jnp.size(unconstrained, -1)
+        n = jnp.size(unconstrained)
         m = cls.variable_size(n)
-        nat1, nat2 = jnp.split(unconstrained, [m], axis=-1)
+        nat1, nat2 = jnp.split(unconstrained, [m])
         nat2 = jnp.reshape(nat2, (m, m))
         nat2 = - nat2 @ nat2.mT
         nat2 = nat2.flatten()
-        return jnp.concatenate((nat1, nat2), axis=-1)
+        return jnp.concatenate((nat1, nat2))
 
 
 class DiagMVN(ExponentialFamily, MVNMixin):
@@ -186,3 +190,7 @@ class DiagMVN(ExponentialFamily, MVNMixin):
         nat1, nat2 = jnp.split(unconstrained, 2, axis=-1)
         nat2 = -jnn.softplus(nat2)
         return jnp.concatenate((nat1, nat2), axis=-1)
+    
+    @classmethod
+    def variable_size(cls, moment_size: int) -> int:
+        return moment_size // 2

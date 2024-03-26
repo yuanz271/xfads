@@ -4,7 +4,7 @@ from functools import partial
 from typing import Type
 
 import jax
-from jax import numpy as jnp, nn as jnn, random as jrandom
+from jax import numpy as jnp, random as jrandom
 from jax.lax import scan
 from jaxtyping import Array, PRNGKeyArray
 import equinox as eqx
@@ -42,12 +42,6 @@ def get_back_encoder(
         depth,
         key=key,
     )
-
-
-# def _constrained_diagmvn_natural(unconstrained):
-#     nat1, nat2 = jnp.split(unconstrained, 2, axis=-1)
-#     nat2 = -jnn.softplus(nat2)
-#     return jnp.concatenate((nat1, nat2), axis=-1)
 
 
 @dataclass

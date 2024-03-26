@@ -10,7 +10,7 @@ def spec():
         state_dim=2,
         input_dim=0,
         covariate_dim=0,
-        approx="DiagMVN",
+        approx="MVN",
         mc_size=10,
         seed=0,
         dyn_spec={"module": "Nonlinear", "depth": 2, "width": 2, "state_noise": 10.0},

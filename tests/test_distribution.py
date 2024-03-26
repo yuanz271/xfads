@@ -1,4 +1,4 @@
-from jax import numpy as jnp
+from jax import numpy as jnp, random as jrandom
 import chex
 import tensorflow_probability.substrates.jax.distributions as tfp
 
@@ -17,6 +17,16 @@ def test_mvn(spec):
     moment2 = MVN.canon_to_moment(m2, cov2)
     kl = MVN.kl(moment1, moment2)
     chex.assert_tree_all_finite(kl)
+    
+    mc_size = 10
+    samples = MVN.sample_by_moment(jrandom.PRNGKey(0), moment1, mc_size=mc_size)
+    chex.assert_shape(samples, (mc_size,) + (state_dim,))
+
+    unconstrained_natural: jnp.Array = jrandom.normal(jrandom.PRNGKey(0), shape=(MVN.moment_size(state_dim),))
+    natural = MVN.constrain_natural(unconstrained_natural)
+    chex.assert_equal_shape((moment1, natural))
+
+    assert MVN.variable_size(MVN.moment_size(state_dim)) == state_dim
 
 
 def test_diagmvn(spec):

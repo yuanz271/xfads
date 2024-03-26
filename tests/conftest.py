@@ -18,8 +18,8 @@ def spec():
         enc_spec={"depth": 2, "width": 2},
         opt_spec={
             "mode": "em",
-            "max_inner_iter": 10,
-            "max_outer_iter": 10,
+            "max_inner_iter": 2,
+            "max_outer_iter": 2,
             "learning_rate": 1e-3,
             "clip_norm": 1.0,
             "batch_size": 1,

@@ -60,9 +60,9 @@ class XFADS(TransformerMixin):
             "opt_spec": opt_spec,
         }
 
-        key: PRNGKeyArray = jrandom.PRNGKey(key_seed)
+        key: PRNGKeyArray = jrandom.key(key_seed)
 
-        approx = getattr(distribution, approx, DiagMVN)
+        approx = getattr(distribution, approx, DiagMVN)  # str to type
 
         self.hyperparam = Hyperparam(
             approx, state_dim, input_dim, neural_dim, covariate_dim, mc_size
@@ -129,7 +129,7 @@ class XFADS(TransformerMixin):
         """
         sq = np.random.SeedSequence(self.seed)
         _, fit_seed = sq.generate_state(2)
-        key = jrandom.PRNGKey(fit_seed)
+        key = jrandom.key(fit_seed)
         
         if self.opt.mode == "joint":
             train = trainer.train_joint
@@ -148,7 +148,7 @@ class XFADS(TransformerMixin):
     ) -> tuple[Array, Array]:
         sq = np.random.SeedSequence(self.seed)
         _, fit_seed = sq.generate_state(2)
-        key = jrandom.PRNGKey(fit_seed)
+        key = jrandom.key(fit_seed)
 
         smooth: Callable[[Array, Array, PRNGKeyArray], tuple[Array, Array]] = (
             make_batch_smoother(

@@ -7,7 +7,7 @@ from xfads.smoothing import Hyperparam
 
 
 def test_smooth(spec, capsys):
-    key = jrandom.PRNGKey(0)
+    key = jrandom.key(0)
     key, dyn_key, obs_key, back_key = jrandom.split(key, 4)
 
     state_dim = spec['state_dim']

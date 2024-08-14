@@ -6,7 +6,7 @@ from xfads.dynamics import DiagMVNStateNoise, Nonlinear, predict_moment, sample_
 
 
 def test_nonlinear(spec):
-    key = jrnd.PRNGKey(0)
+    key = jrnd.key(0)
     state_dim = spec['state_dim']
     input_dim = spec['input_dim']
     
@@ -18,7 +18,7 @@ def test_nonlinear(spec):
 
 
 def test_predict_moment(spec):
-    key = jrnd.PRNGKey(0)
+    key = jrnd.key(0)
     state_dim = spec['state_dim']
     input_dim = spec['input_dim']
 
@@ -33,7 +33,7 @@ def test_predict_moment(spec):
 
 
 def test_sample_expected_moment(spec):
-    key = jrnd.PRNGKey(0)
+    key = jrnd.key(0)
     state_dim = spec['state_dim']
     input_dim = spec['input_dim']
 

@@ -13,8 +13,8 @@ def test_xfads(spec: ModelSpec, capsys):
 
     xfads = XFADS(**spec)
 
-    y = jrandom.normal(key=jrandom.PRNGKey(0), shape=(N, T, spec['neural_dim']))
-    u = jrandom.normal(key=jrandom.PRNGKey(0), shape=(N, T, spec['input_dim']))
+    y = jrandom.normal(key=jrandom.key(0), shape=(N, T, spec['neural_dim']))
+    u = jrandom.normal(key=jrandom.key(0), shape=(N, T, spec['input_dim']))
     x = jnp.zeros((N, T, spec['covariate_dim']))
 
     with capsys.disabled():

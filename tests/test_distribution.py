@@ -19,10 +19,10 @@ def test_mvn(spec):
     chex.assert_tree_all_finite(kl)
     
     mc_size = 10
-    samples = MVN.sample_by_moment(jrandom.PRNGKey(0), moment1, mc_size=mc_size)
+    samples = MVN.sample_by_moment(jrandom.key(0), moment1, mc_size=mc_size)
     chex.assert_shape(samples, (mc_size,) + (state_dim,))
 
-    unconstrained_natural: jnp.Array = jrandom.normal(jrandom.PRNGKey(0), shape=(MVN.moment_size(state_dim),))
+    unconstrained_natural: jnp.Array = jrandom.normal(jrandom.key(0), shape=(MVN.moment_size(state_dim),))
     natural = MVN.constrain_natural(unconstrained_natural)
     chex.assert_equal_shape((moment1, natural))
 

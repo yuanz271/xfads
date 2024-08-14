@@ -7,7 +7,7 @@ from xfads.vi import DiagMVNLik, PoissonLik, elbo, make_batch_elbo
 
 
 def test_poisson(spec):
-    key = jrnd.PRNGKey(0)
+    key = jrnd.key(0)
     state_dim = spec['state_dim']
     neural_dim = spec['neural_dim']
     approx = MVN
@@ -30,7 +30,7 @@ def test_poisson(spec):
     
 
 def test_elbo(spec):
-    key = jrnd.PRNGKey(0)
+    key = jrnd.key(0)
 
     state_dim = spec['state_dim']
     neural_dim = spec['neural_dim']
@@ -53,7 +53,7 @@ def test_elbo(spec):
 
 
 def test_batch_elbo(spec, capsys):
-    key = jrandom.PRNGKey(0)
+    key = jrandom.key(0)
     key, rkey, ykey, ykey, ukey, skey, pkey = jrandom.split(key, 7)
 
     N: int = 10

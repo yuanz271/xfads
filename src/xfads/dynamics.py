@@ -7,7 +7,7 @@ import equinox as eqx
 from equinox import Module, nn as enn
 
 from .nn import make_mlp, softplus_inverse
-from .distribution import ExponentialFamily, DiagMVN, FullMVN
+from .distribution import ExponentialFamily, DiagMVN, FullMVN, LRMVN
 
 # TODO: decouple noise and transition
 # model(likelihood, transition, noise, approximate, data)
@@ -127,7 +127,9 @@ def predict_moment(
         case DiagMVN():
             M2 = noise.cov()
         case FullMVN():
-            M2 = jnp.diag(1 / noise.cov())
+            M2 = jnp.diag(noise.cov())
+        case LRMVN():
+            M2 = jnp.diag(noise.cov())
         case _:
             raise ValueError(f"{approx}")
     moment = approx.canon_to_moment(ztp1, M2)

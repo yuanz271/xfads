@@ -2,7 +2,7 @@ from jax import numpy as jnp, random as jrandom
 
 import xfads
 from xfads.dynamics import GaussianStateNoise, Nonlinear
-from xfads.distribution import DiagMVN, FullMVN
+from xfads.distribution import DiagMVN, FullMVN, LRMVN
 from xfads.smoothing import smooth
 from xfads.smoothing import Hyperparam
 
@@ -16,13 +16,13 @@ def test_smooth(spec, capsys):
     depth = spec['depth']
     width = spec['width']
 
-    approx = getattr(xfads.distribution, spec["approx"])
+    approx = LRMVN
 
     T: int = 100
 
     f = Nonlinear(state_dim, input_dim, width, depth, key=dyn_key)
 
-    obs_encoder, back_encoder = DiagMVN.get_encoders(observation_dim, state_dim, width, depth, enc_key)
+    obs_encoder, back_encoder = approx.get_encoders(observation_dim, state_dim, width, depth, enc_key)
     
     key, ykey, ukey, rkey, skey = jrandom.split(key, 5)
 

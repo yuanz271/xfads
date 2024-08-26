@@ -13,8 +13,8 @@ from equinox import Module, nn as enn
 from sklearn.base import TransformerMixin
 from tqdm import trange
 
-from . import vi, smoothing, distribution, spec
-from .dynamics import GaussianStateNoise, build_dynamics
+from . import vi, smoothing, distribution, spec, dynamics as dyn_mod
+from .dynamics import GaussianStateNoise
 from .vi import DiagMVNLik, Likelihood
 from .smoothing import Hyperparam
 
@@ -362,15 +362,15 @@ class XFADS(TransformerMixin):
         )
 
         key, dkey, rkey, enc_key = jrandom.split(key, 4)
-
-        self.dynamics = build_dynamics(
-            dynamics,
+        
+        dynamics_class = getattr(dyn_mod, dynamics)
+        self.dynamics = dynamics_class(
             key=dkey,
             state_dim=state_dim,
             input_dim=input_dim,
             width=width,
-            depth=depth,
-        )
+            depth=depth
+            )
         self.statenoise = GaussianStateNoise(state_noise * jnp.ones(state_dim))
         self.likelihood = DiagMVNLik(
             cov=emission_noise * jnp.ones(observation_dim),

@@ -11,41 +11,21 @@ class Modules(TypedDict):
     covariate: Module
 
 
-class EncoderSpec(TypedDict):
-    depth: int
-    width: int
-
-
-class StateModelSpec(TypedDict):
-    module: str
-    depth: int
-    width: int
-    state_noise: float
-
-
-class NeuralModelSpec(TypedDict):
-    emission_noise: float
-
-
-class OptSpec(TypedDict):
-    mode: str
-    max_inner_iter: int
-    max_outer_iter: int
-    learning_rate: float
-    clip_norm: float
-    batch_size: int
-    static: str
-
-
 class ModelSpec(TypedDict):
-    neural_dim: int
+    observation_dim: int
     state_dim: int
     input_dim: int
-    covariate_dim: int
+    width: int
+    depth: int
+    emission_noise: float
+    state_noise: float
+    dynamics: str
     approx: str
+    norm_readout: bool
     mc_size: int
-    seed: int
-    dyn_spec: StateModelSpec
-    lik_spec: NeuralModelSpec    
-    enc_spec: EncoderSpec
-    opt_spec: OptSpec
+    random_state: int
+    min_iter: int
+    max_em_iter: int
+    max_inner_iter: int
+    batch_size: int
+    static_params: str

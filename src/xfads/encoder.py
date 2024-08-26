@@ -15,8 +15,8 @@ class ImplicitDiagMVN(Module):
     """
     mlp: Module
 
-    def __init__(self, state_dim: int, observation_dim: int, hidden_size: int, n_layers: int, *, key: PRNGKeyArray):
-        self.mlp = make_mlp(observation_dim, state_dim*2, hidden_size, n_layers, key=key)
+    def __init__(self, state_dim: int, observation_dim: int, width: int, depth: int, *, key: PRNGKeyArray):
+        self.mlp = make_mlp(observation_dim, state_dim*2, width, depth, key=key)
 
     def __call__(self, y: Array) -> tuple[Array, Array]:
         output = self.mlp(y)
@@ -29,11 +29,11 @@ class BackwardDiagMVN(Module):
     output_layer: Module
     h0: Array
 
-    def __init__(self, state_dim: int, observation_dim: int, hidden_size: int, *, key: PRNGKeyArray):
+    def __init__(self, state_dim: int, observation_dim: int, width: int, *, key: PRNGKeyArray):
         rnn_key, output_key, hkey = jrandom.split(key, 3)
-        self.h0 = jrandom.normal(hkey, shape=(hidden_size,))
-        self.cell = enn.GRUCell(observation_dim, hidden_size, key=rnn_key)
-        self.output_layer = enn.Linear(hidden_size, state_dim*2, key=output_key)
+        self.h0 = jrandom.normal(hkey, shape=(width,))
+        self.cell = enn.GRUCell(observation_dim, width, key=rnn_key)
+        self.output_layer = enn.Linear(width, state_dim*2, key=output_key)
 
     def __call__(self, y: Array) -> tuple[Array, Array]:
         h0 = jnn.tanh(self.h0)

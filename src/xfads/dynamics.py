@@ -1,11 +1,13 @@
+from dataclasses import field
+
 import jax
 from jax import numpy as jnp, nn as jnn, random as jrandom
 from jaxtyping import Array, PRNGKeyArray
 import equinox as eqx
 from equinox import Module, nn as enn
 
-from .nn import Constant, make_mlp, softplus_inverse
-from .distribution import ExponentialFamily
+from .nn import make_mlp, softplus_inverse
+from .distribution import ExponentialFamily, DiagMVN, FullMVN
 
 # TODO: decouple noise and transition
 # model(likelihood, transition, noise, approximate, data)
@@ -14,7 +16,7 @@ from .distribution import ExponentialFamily
 # Never nest modules
 
 
-class DiagMVNStateNoise(Module):
+class GaussianStateNoise(Module):
     unconstrained_cov: Array = eqx.field(static=False)
     
     def __init__(self, cov):
@@ -22,77 +24,113 @@ class DiagMVNStateNoise(Module):
 
     def cov(self) -> Array:
         return jnn.softplus(self.unconstrained_cov)
-    
+
     def set_static(self, static=True) -> None:
         self.__dataclass_fields__['unconstrained_cov'].metadata = {'static': static}
 
 
-class Nonlinear(Module):
-    forward: Module = eqx.field(init=False)
-
-    def __init__(
-        self,
-        state_dim: int,
-        input_dim: int,
-        *,
-        key: PRNGKeyArray,
-        kwargs: dict
-    ):
-        hidden_size: int = kwargs['width']
-        n_layers: int = kwargs['depth']
-
-        self.forward = make_mlp(
-            state_dim + input_dim, state_dim, hidden_size, n_layers, key=key
-        )
-
-    def __call__(self, z: Array, u: Array) -> Array:
-        x = jnp.concatenate((z, u), axis=-1)
-        return z + self.forward(x)
-
-
-class Linear(Module):
-    autonomous: Module = eqx.field(init=False)
-    control: Module = eqx.field(init=False)
-
-    def __init__(
-        self,
-        state_dim: int,
-        input_dim: int,
-        *,
-        key: PRNGKeyArray,
-        kwargs: dict
-    ):
-        akey, ikey = jrandom.split(key)
-        self.autonomous = enn.Linear(state_dim, state_dim, key=akey)
-        self.control = enn.Linear(input_dim, state_dim, use_bias=False, key=akey) if input_dim > 0 else Constant(state_dim, 0.)
-
-    def __call__(self, z: Array, u: Array) -> Array:
-        return self.autonomous(z) + self.control(u)
-
-
 class Diffusion(Module):
-    decay: float = eqx.field(static=True)
-
     def __init__(
         self,
         state_dim: int,
         input_dim: int,
+        width: int,
+        depth: int,
         *,
         key: PRNGKeyArray,
-        kwargs: dict
     ):
-        self.decay = 1.
+        pass
 
     def __call__(self, z: Array, u: Array) -> Array:
         return z
 
 
+class Nonlinear(Module):
+    forward: Module = field(init=False)
+
+    def __init__(
+        self,
+        state_dim: int,
+        input_dim: int,
+        width: int,
+        depth: int,
+        *,
+        key: PRNGKeyArray,
+    ):
+        self.forward = make_mlp(
+            state_dim + input_dim, state_dim, width, depth, key=key
+        )
+
+    def __call__(self, z: Array, u: Array) -> Array:
+        x = jnp.concatenate((z, u), axis=-1)
+        return self.forward(x)
+
+
+class LinearRecurrent(Module):
+    recurrent: Module = field(init=False)
+    drive: Module = field(init=False)
+
+    def __init__(
+        self,
+        state_dim: int,
+        input_dim: int,
+        width: int,
+        depth: int,
+        *,
+        key: PRNGKeyArray,
+    ):
+        recurrent_key, input_key = jrandom.split(key)
+        self.drive = make_mlp(
+            state_dim + input_dim, state_dim, width, depth, key=input_key
+        )
+        self.recurrent = enn.Linear(state_dim, state_dim, use_bias=False, key=recurrent_key)
+
+    def __call__(self, z: Array, u: Array) -> Array:
+        x = jnp.concatenate((z, u), axis=-1)
+        return self.recurrent(z) + self.drive(x)
+    
+
+class LinearInput(Module):
+    recurrent: Module = field(init=False)
+    drive: Module = field(init=False)
+
+    def __init__(
+        self,
+        state_dim: int,
+        input_dim: int,
+        width: int,
+        depth: int,
+        *,
+        key: PRNGKeyArray,
+    ):
+        recurrent_key, input_key = jrandom.split(key)
+        self.recurrent = make_mlp(
+            state_dim, state_dim, width, depth, key=recurrent_key
+        )
+        self.drive = enn.Linear(input_dim, state_dim, use_bias=False, key=input_key)
+
+    def __call__(self, z: Array, u: Array) -> Array:
+        return self.recurrent(z) + self.drive(u)
+    
+
+def build_dynamics(name: str, *, key, **kwargs) -> Module:
+    dynamics_class = globals()[name]
+    return dynamics_class(key=key, **kwargs)
+
+
 def predict_moment(
-    z: Array, u: Array, forward, noise: DiagMVNStateNoise, approx: ExponentialFamily
+    z: Array, u: Array, forward, noise: GaussianStateNoise, approx: ExponentialFamily
 ) -> Array:
     """mu[t](z[t-1])"""
     ztp1 = forward(z, u)
-    moment = approx.canon_to_moment(ztp1, noise.cov())
+    match approx():
+        case DiagMVN():
+            M2 = noise.cov()
+        case FullMVN():
+            M2 = jnp.diag(1 / noise.cov())
+        case _:
+            raise ValueError(f"{approx}")
+    moment = approx.canon_to_moment(ztp1, M2)
     return moment
 
 
@@ -101,7 +139,7 @@ def sample_expected_moment(
     moment: Array,
     u: Array,
     forward,
-    noise: DiagMVNStateNoise,
+    noise: GaussianStateNoise,
     approx: ExponentialFamily,
     mc_size: int,
 ) -> Array:

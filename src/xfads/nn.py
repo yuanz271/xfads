@@ -1,28 +1,24 @@
 from functools import partial
-from typing import Callable, Optional, Any
-from jaxtyping import PRNGKeyArray, Array, Scalar
+from tkinter import W
+from typing import Callable, Optional
+
 import jax
 from jax import nn as jnn, random as jrandom, numpy as jnp
+from jaxtyping import PRNGKeyArray, Array, Scalar
 from equinox import nn as enn, Module, field, tree_at
 from equinox.nn import Linear
 
 
-def make_mlp(
-    in_size,
-    out_size,
-    width,
-    depth,
-    *,
-    key: PRNGKeyArray,
-    activation: Callable = jnn.silu,
-):
-    keys = jrandom.split(key, depth + 1)
-    layers = []
+EPS = 1e-6
+
+
+def make_mlp(in_size, out_size, width, depth, *, key: PRNGKeyArray, activation: Callable=jnn.swish):
+    keys = jrandom.split(key, depth + 2)
+    layers = [enn.Linear(in_size, width, key=keys[0]), enn.Lambda(activation)]
     for i in range(depth):
-        layers.append(enn.Linear(in_size, width, key=keys[i]))
+        layers.append(enn.Linear(width, width, key=keys[i + 1]))
         layers.append(enn.Lambda(activation))
-        in_size = width
-    layers.append(enn.Linear(in_size, out_size, key=keys[-1]))
+    layers.append(enn.Linear(width, out_size, key=keys[-1]))
     return enn.Sequential(layers)
 
 
@@ -35,7 +31,7 @@ def _norm_except_axis(v: Array, norm: Callable[[Array], Scalar], axis: Optional[
         return norm(v)
     else:
         return jax.vmap(norm, in_axes=axis, out_axes=axis)(v)
-
+    
 
 class WeightNorm(Module):
     layer: Linear
@@ -47,7 +43,7 @@ class WeightNorm(Module):
         self,
         layer: Linear,
         weight_name: str = "weight",
-        axis: Optional[int] = 0,
+        axis: Optional[int] = None,
     ):
         """
         :param layer: The layer to wrap. equinox.nn.Linear
@@ -63,30 +59,25 @@ class WeightNorm(Module):
             norm=partial(jnp.linalg.norm, keepdims=True),
             axis=axis,
         )
-
+    
+    @property
     def weight(self) -> Array:
         w = getattr(self.layer, self.weight_name)
-        weight = w / self._norm(w)
+        w = w / (self._norm(w) + EPS)
 
-        return weight
+        return w
+    
+    @property
+    def bias(self) -> Array:
+        return self.layer.bias
 
     @jax.named_scope("xfads.nn.WeightNorm")
     def __call__(self, x: Array) -> Array:
         """
         :param x: JAX Array
         """
-        weight = self.weight()
+        weight = self.weight
         layer = tree_at(
             lambda layer: getattr(layer, self.weight_name), self.layer, weight
         )
         return layer(x)
-
-
-class Constant(Module):
-    const: Array
-
-    def __init__(self, out_features: int, fill_value: float = 0.0) -> None:
-        self.const = jnp.full((out_features,), fill_value=fill_value)
-
-    def __call__(self, *args: Any, **kwargs: Any) -> Array:
-        return self.const

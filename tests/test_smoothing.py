@@ -2,7 +2,7 @@ from jax import numpy as jnp, random as jrandom
 
 import xfads
 from xfads.dynamics import GaussianStateNoise, Nonlinear
-from xfads.distribution import DiagMVN, FullMVN, LRMVN
+from xfads.distribution import DiagMVN, FullMVN, LoRaMVN
 from xfads.smoothing import smooth
 from xfads.smoothing import Hyperparam
 
@@ -16,7 +16,7 @@ def test_smooth(spec, capsys):
     depth = spec['depth']
     width = spec['width']
 
-    approx = LRMVN
+    approx = LoRaMVN
 
     T: int = 100
 

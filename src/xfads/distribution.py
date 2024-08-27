@@ -87,7 +87,6 @@ class FullMVN(MVN):
     @classmethod
     def moment_to_canon(cls, moment: Array) -> tuple[Array, Array]:
         n = jnp.size(moment)
-        assert n == 6, n
         m = cls.variable_size(n)
         mean, p = jnp.split(moment, [m])
         P = jnp.reshape(p, (m, m))
@@ -160,7 +159,7 @@ class FullMVN(MVN):
         return obs_enc, back_enc
 
 
-class LRMVN(MVN):
+class LoRaMVN(MVN):
     @classmethod
     def natural_to_moment(cls, natural: Array) -> Array:
         """Pmu, -P/2 => mu, P"""
@@ -191,7 +190,6 @@ class LRMVN(MVN):
     @classmethod
     def moment_to_canon(cls, moment: Array) -> tuple[Array, Array]:
         n = jnp.size(moment)
-        assert n == 6, n
         m = cls.variable_size(n)
         mean, p = jnp.split(moment, [m])
         P = jnp.reshape(p, (m, m))

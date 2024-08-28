@@ -69,7 +69,7 @@ def make_batch_elbo(
         moment_p: Array,
         ys: Array,
         *,
-        reduce: Callable = jnp.mean,
+        reduce: Callable = jnp.nanmean,
     ) -> Scalar:
         keys = jrandom.split(key, ys.shape[:2])  # ys.shape[:2] + (2,)
         return reduce(elbo(keys, moment_s, moment_p, ys))

@@ -7,7 +7,7 @@ import equinox as eqx
 from equinox import Module, nn as enn
 
 from .nn import make_mlp, softplus_inverse
-from .distribution import ExponentialFamily, DiagMVN, FullMVN, LoRaMVN
+from .distribution import MVN
 
 # TODO: decouple noise and transition
 # model(likelihood, transition, noise, approximate, data)
@@ -119,19 +119,20 @@ def build_dynamics(name: str, *, key, **kwargs) -> Module:
 
 
 def predict_moment(
-    z: Array, u: Array, forward, noise: GaussianStateNoise, approx: ExponentialFamily
+    z: Array, u: Array, forward, noise: GaussianStateNoise, approx: MVN
 ) -> Array:
     """mu[t](z[t-1])"""
     ztp1 = forward(z, u)
-    match approx():
-        case DiagMVN():
-            M2 = noise.cov()
-        case FullMVN():
-            M2 = jnp.diag(noise.cov())
-        case LoRaMVN():
-            M2 = jnp.diag(noise.cov())
-        case _:
-            raise ValueError(f"{approx}")
+    M2 = approx.noise_moment(noise.cov())
+    # match approx():
+    #     case DiagMVN():
+    #         M2 = noise.cov()
+    #     case FullMVN():
+    #         M2 = jnp.diag(noise.cov())
+    #     case LoRaMVN():
+    #         M2 = jnp.diag(noise.cov())
+    #     case _:
+    #         raise ValueError(f"{approx}")
     moment = approx.canon_to_moment(ztp1, M2)
     return moment
 
@@ -142,7 +143,7 @@ def sample_expected_moment(
     u: Array,
     forward,
     noise: GaussianStateNoise,
-    approx: ExponentialFamily,
+    approx: MVN,
     mc_size: int,
 ) -> Array:
     """E[mu[t](z[t-1])]"""

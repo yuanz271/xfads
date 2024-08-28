@@ -34,14 +34,17 @@ def smooth(
     hyperparam: Hyperparam,
 ) -> tuple[Array, Array]:
     approx = hyperparam.approx
-    nature_y = jax.vmap(lambda x: approx.constrain_natural(obs_encoder(x)))(y)
+    natural_to_moment = jax.vmap(approx.natural_to_moment)
+    moment_to_natural = jax.vmap(approx.moment_to_natural)
+
+    moment_y = jax.vmap(lambda x: approx.constrain_moment(obs_encoder(x)))(y)
+    nature_y = moment_to_natural(moment_y)
     nature_prior_1 = approx.prior_natural(hyperparam.state_dim)
     
     nature_f_1 = nature_prior_1 + nature_y[0]
     moment_f_1 = approx.natural_to_moment(nature_f_1)
 
     expected_moment = partial(sample_expected_moment, forward=dynamics, noise=statenoise, approx=approx, mc_size=hyperparam.mc_size)
-    natural_to_moment = jax.vmap(approx.natural_to_moment)
 
     def forward(carry, obs):
         key, nature_f_tm1 = carry
@@ -57,7 +60,7 @@ def smooth(
         key, nature_s_tp1 = carry
         subkey, key_t = jrandom.split(key, 2)
         nature_y_t, nature_f_t = z
-        update = approx.constrain_natural(back_encoder(jnp.concatenate((nature_y_t, nature_s_tp1))))
+        update = approx.moment_to_natural(approx.constrain_moment(back_encoder(jnp.concatenate((nature_y_t, nature_s_tp1)))))
         nature_s_t = nature_f_t + update
         return (subkey, update), nature_s_t
 

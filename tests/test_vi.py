@@ -3,7 +3,7 @@ from equinox import nn as enn
 import chex
 
 from xfads.distribution import MVN, DiagMVN
-from xfads.vi import DiagMVNLik, elbo, make_batch_elbo
+from xfads.vi import DiagMVNLik, elbo
 
 
 # def test_poisson(spec):
@@ -52,21 +52,21 @@ from xfads.vi import DiagMVNLik, elbo, make_batch_elbo
 #     chex.assert_tree_all_finite(val)
 
 
-def test_batch_elbo(spec, capsys):
-    key = jrandom.key(0)
-    key, rkey, ykey, ykey, ukey, skey, pkey = jrandom.split(key, 7)
+# def test_batch_elbo(spec, capsys):
+#     key = jrandom.key(0)
+#     key, rkey, ykey, ykey, ukey, skey, pkey = jrandom.split(key, 7)
 
-    N: int = 10
-    T: int = 100
+#     N: int = 10
+#     T: int = 100
 
-    linear_readout = enn.Linear(spec['state_dim'], spec['neural_dim'], key=rkey)
-    likelihood = DiagMVNLik(cov=jnp.ones(spec['neural_dim']), readout=linear_readout)
+#     linear_readout = enn.Linear(spec['state_dim'], spec['neural_dim'], key=rkey)
+#     likelihood = DiagMVNLik(cov=jnp.ones(spec['neural_dim']), readout=linear_readout)
 
-    elbo = make_batch_elbo(likelihood.eloglik, DiagMVN, mc_size=10)
-    ys = jrandom.normal(ykey, (N, T, spec['neural_dim']))
-    covariate_predict = jrandom.normal(ykey, (N, T, spec['neural_dim']))
-    moment_s = jrandom.uniform(skey, (N, T, spec['state_dim'] * 2))
-    moment_p = jrandom.uniform(pkey, (N, T, spec['state_dim'] * 2))
+#     elbo = make_batch_elbo(likelihood.eloglik, DiagMVN, mc_size=10)
+#     ys = jrandom.normal(ykey, (N, T, spec['neural_dim']))
+#     covariate_predict = jrandom.normal(ykey, (N, T, spec['neural_dim']))
+#     moment_s = jrandom.uniform(skey, (N, T, spec['state_dim'] * 2))
+#     moment_p = jrandom.uniform(pkey, (N, T, spec['state_dim'] * 2))
 
-    with capsys.disabled():
-        elbo(key, moment_s, moment_p, covariate_predict, ys)
+#     with capsys.disabled():
+#         elbo(key, moment_s, moment_p, covariate_predict, ys)

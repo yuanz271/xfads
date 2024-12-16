@@ -90,6 +90,33 @@ class LinearRecurrent(Module):
         return self.recurrent(z) + self.drive(x)
     
 
+class LocallyLinearInput(Module):
+    B_shape: tuple[int, int] = eqx.field(static=True, init=False)
+    recurrent: Module = eqx.field(init=False)
+    drive: Module = eqx.field(init=False)
+
+    def __init__(
+        self,
+        state_dim: int,
+        input_dim: int,
+        width: int,
+        depth: int,
+        *,
+        key: PRNGKeyArray,
+    ):
+        recurrent_key, input_key = jrandom.split(key)
+        self.drive = make_mlp(
+            state_dim, state_dim * input_dim, width, depth, key=input_key
+        )
+        self.recurrent = enn.Linear(state_dim, state_dim, use_bias=False, key=recurrent_key)
+        self.B_shape = (state_dim, input_dim)
+
+    def __call__(self, z: Array, u: Array) -> Array:
+        vec_B = self.drive(z)
+        B = jnp.reshape(vec_B, self.B_shape)
+        return self.recurrent(z) + B @ u
+    
+
 class LinearInput(Module):
     recurrent: Module = field(init=False)
     drive: Module = field(init=False)

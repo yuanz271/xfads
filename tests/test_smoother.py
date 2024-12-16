@@ -12,13 +12,14 @@ def test_xfads(spec: ModelSpec, capsys):
     T: int = 100
 
     xfads = XFADS(**spec)
-
+    
+    t = jnp.tile(jnp.arange(T, dtype=int), (N, 1))
     y = jrandom.normal(key=jrandom.key(0), shape=(N, T, spec['observation_dim']))
     u = jrandom.normal(key=jrandom.key(0), shape=(N, T, spec['input_dim']))
     x = jnp.zeros((N, T, spec['covariate_dim']))
 
     with capsys.disabled():
-        xfads.fit((y, u), key=jrandom.key(0))
+        xfads.fit((t, y, u), key=jrandom.key(0))
 
     with TemporaryDirectory() as tmpdir:
         xfads.save_model(f"{tmpdir}/model.eqx")

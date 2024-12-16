@@ -23,6 +23,7 @@ class Hyperparam:
 
 
 def smooth(
+    t: Array,
     y: Array,
     u: Array,
     key: PRNGKeyArray,

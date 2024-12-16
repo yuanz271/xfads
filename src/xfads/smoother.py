@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Callable, Optional, Self, Type
+from typing import Callable, Optional, Self
 import json
 
 from jaxtyping import Array, PRNGKeyArray, Scalar
@@ -15,7 +15,7 @@ from tqdm import trange
 
 from . import vi, smoothing, distribution, spec, dynamics as dyn_mod
 from .dynamics import GaussianStateNoise
-from .vi import DiagMVNLik, Likelihood
+from .vi import DiagMVNLik, Likelihood, NonstationaryPoissonLik, PoissonLik
 from .smoothing import Hyperparam
 
 
@@ -50,8 +50,8 @@ def make_batch_smoother(
     )
 
     @eqx.filter_jit
-    def _smooth(ys, us, key) -> tuple[Array, Array]:
-        return smooth(ys, us, jrandom.split(key, jnp.size(ys, 0)))
+    def _smooth(ts, ys, us, key) -> tuple[Array, Array]:
+        return smooth(ts, ys, us, jrandom.split(key, jnp.size(ys, 0)))
 
     return _smooth
 
@@ -62,9 +62,11 @@ def make_batch_elbo(
     elbo = jax.vmap(
         jax.vmap(partial(vi.elbo, eloglik=eloglik, approx=approx, mc_size=mc_size))
     )  # (batch, seq)
-
+    
+    @eqx.filter_jit
     def _elbo(
         key: PRNGKeyArray,
+        ts: Array,
         moment_s: Array,
         moment_p: Array,
         ys: Array,
@@ -72,7 +74,7 @@ def make_batch_elbo(
         reduce: Callable = jnp.nanmean,
     ) -> Scalar:
         keys = jrandom.split(key, ys.shape[:2])  # ys.shape[:2] + (2,)
-        return reduce(elbo(keys, moment_s, moment_p, ys))
+        return reduce(elbo(keys, ts, moment_s, moment_p, ys))
 
     return _elbo
 
@@ -88,9 +90,9 @@ def make_optimizer(module, opt: Opt):
 
 
 def loader(
-    ys, us, batch_size, *, key
+    ts, ys, us, batch_size, *, key
 ):  # -> Generator[tuple[Any, Any, KeyArray], Any, None]:
-    chex.assert_equal_shape((ys, us), dims=0)
+    chex.assert_equal_shape((ts, ys, us), dims=0)
 
     n: int = jnp.size(ys, 0)
     q = n // batch_size
@@ -102,10 +104,10 @@ def loader(
     K = q + 1 if m > 0 else q
     for k in range(K):
         indices = perm[k * batch_size : (k + 1) * batch_size]
-        yield ys[indices], us[indices], jrandom.fold_in(key, k)
+        yield ts[indices], ys[indices], us[indices], jrandom.fold_in(key, k)
 
 
-def batch_loss(m_modules, e_modules, y, u, key, hyperparam) -> Scalar:
+def batch_loss(m_modules, e_modules, t, y, u, key, hyperparam) -> Scalar:
     dynamics, likelihood, statenoise, obs_encoder, back_encoder = m_modules + e_modules
 
     smooth = make_batch_smoother(
@@ -119,11 +121,11 @@ def batch_loss(m_modules, e_modules, y, u, key, hyperparam) -> Scalar:
     elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
 
     skey, lkey = jrandom.split(key)
-    moment_s, moment_p = smooth(y, u, skey)
-    return -elbo(lkey, moment_s, moment_p, y)
+    moment_s, moment_p = smooth(t, y, u, skey)
+    return -elbo(lkey, t, moment_s, moment_p, y)
 
 
-def batch_loss_joint(modules, y, u, key, hyperparam) -> Scalar:
+def batch_loss_joint(modules, t, y, u, key, hyperparam) -> Scalar:
     dynamics, likelihood, statenoise, obs_encoder, back_encoder = modules
 
     smooth = make_batch_smoother(
@@ -137,18 +139,18 @@ def batch_loss_joint(modules, y, u, key, hyperparam) -> Scalar:
     elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
 
     skey, lkey = jrandom.split(key)
-    moment_s, moment_p = smooth(y, u, skey)
-    return -elbo(lkey, moment_s, moment_p, y)
+    moment_s, moment_p = smooth(t, y, u, skey)
+    return -elbo(lkey, t, moment_s, moment_p, y)
 
 
-def train_loop(modules, y, u, key, step, opt_state, opt):
+def train_loop(modules, t, y, u, key, step, opt_state, opt):
     # old_loss = jnp.inf
     for i in range(opt.max_inner_iter):
         key_i = jrandom.fold_in(key, i)
         total_loss = 0.0
         n_minibatch = 0
-        for ym, um, minibatch_key in loader(y, u, opt.batch_size, key=key_i):
-            modules, opt_state, loss = step(modules, ym, um, minibatch_key, opt_state)
+        for tm, ym, um, minibatch_key in loader(t, y, u, opt.batch_size, key=key_i):
+            modules, opt_state, loss = step(modules, tm, ym, um, minibatch_key, opt_state)
             # chex.assert_tree_all_finite(loss)
             total_loss += loss
             n_minibatch += 1
@@ -161,7 +163,8 @@ def train_loop(modules, y, u, key, step, opt_state, opt):
     return total_loss, modules, opt_state
 
 
-def train(
+def train_em(
+    t: Array,
     y: Array,
     u: Array,
     dynamics,
@@ -183,23 +186,23 @@ def train(
     optimizer_e, opt_state_estep = make_optimizer(e_modules, opt)
 
     @eqx.filter_value_and_grad
-    def eloss(e_modules, y, u, key) -> Scalar:
-        return batch_loss(m_modules, e_modules, y, u, key, hyperparam)
+    def eloss(e_modules, t, y, u, key) -> Scalar:
+        return batch_loss(m_modules, e_modules, t, y, u, key, hyperparam)
 
     @eqx.filter_value_and_grad
-    def mloss(m_modules, y, u, key) -> Scalar:
-        return batch_loss(m_modules, e_modules, y, u, key, hyperparam)
+    def mloss(m_modules, t, y, u, key) -> Scalar:
+        return batch_loss(m_modules, e_modules, t, y, u, key, hyperparam)
 
     @eqx.filter_jit
-    def estep(module, y, u, key, opt_state):
-        loss, grads = eloss(module, y, u, key)
+    def estep(module, t, y, u, key, opt_state):
+        loss, grads = eloss(module, t, y, u, key)
         updates, opt_state = optimizer_e.update(grads, opt_state, module)
         module = eqx.apply_updates(module, updates)
         return module, opt_state, loss
 
     @eqx.filter_jit
-    def mstep(module, y, u, key, opt_state):
-        loss, grads = mloss(module, y, u, key)
+    def mstep(module, t, y, u, key, opt_state):
+        loss, grads = mloss(module, t, y, u, key)
         updates, opt_state = optimizer_m.update(grads, opt_state, module)
         module = eqx.apply_updates(module, updates)
         return module, opt_state, loss
@@ -211,10 +214,10 @@ def train(
         try:
             ekey, mkey = jrandom.split(jrandom.fold_in(em_key, i))
             loss_e, e_modules, opt_state_estep = train_loop(
-                e_modules, y, u, ekey, estep, opt_state_estep, opt
+                e_modules, t, y, u, ekey, estep, opt_state_estep, opt
             )
             loss_m, m_modules, opt_state_mstep = train_loop(
-                m_modules, y, u, mkey, mstep, opt_state_mstep, opt
+                m_modules, t, y, u, mkey, mstep, opt_state_mstep, opt
             )
             loss = 0.5 * (loss_e.item() + loss_m.item())
 
@@ -235,6 +238,7 @@ def train(
 
 
 def train_joint(
+    t: Array,
     y: Array,
     u: Array,
     dynamics,
@@ -254,11 +258,11 @@ def train_joint(
     optimizer, opt_state_step = make_optimizer(modules, opt)
 
     @eqx.filter_value_and_grad
-    def loss_func(modules, y, u, key) -> Scalar:
-        return batch_loss_joint(modules, y, u, key, hyperparam)
+    def loss_func(modules, t, y, u, key) -> Scalar:
+        return batch_loss_joint(modules, t, y, u, key, hyperparam)
 
     @eqx.filter_jit
-    def joint_step(modules, y, u, key, opt_state):
+    def joint_step(modules, t, y, u, key, opt_state):
         loss, grads = loss_func(modules, y, u, key)
         updates, opt_state = optimizer.update(grads, opt_state, modules)
         modules = eqx.apply_updates(modules, updates)
@@ -273,7 +277,7 @@ def train_joint(
         try:
             it_key = jrandom.fold_in(em_key, i)
             loss_joint, modules, opt_state_step = train_loop(
-                modules, y, u, it_key, joint_step, opt_state_step, opt
+                modules, t, y, u, it_key, joint_step, opt_state_step, opt
             )
 
             loss = loss_joint.item()
@@ -318,6 +322,8 @@ class XFADS(TransformerMixin):
         covariate_dim: int = 0,
         dynamics: str = "Nonlinear",
         approx: str = "DiagMVN",
+        observation: str = "gaussian",
+        n_steps: int = 1,
         norm_readout: bool = False,
         mc_size: int = 1,
         random_state: int = 0,
@@ -338,6 +344,8 @@ class XFADS(TransformerMixin):
             covariate_dim=covariate_dim,
             dynamics=dynamics,
             approx=approx,
+            observation=observation,
+            n_steps=n_steps,
             norm_readout=norm_readout,
             mc_size=mc_size,
             random_state=random_state,
@@ -372,11 +380,20 @@ class XFADS(TransformerMixin):
             depth=depth
             )
         self.statenoise = GaussianStateNoise(state_noise * jnp.ones(state_dim))
-        self.likelihood = DiagMVNLik(
-            cov=emission_noise * jnp.ones(observation_dim),
-            readout=enn.Linear(state_dim, observation_dim, key=rkey),
-            norm_readout=norm_readout,
-        )
+
+        if observation == "poisson":
+            self.likelihood = PoissonLik(
+                readout=enn.Linear(state_dim, observation_dim, key=rkey),
+                norm_readout=norm_readout)
+        elif observation == "NonstationaryPoissonLik":
+            self.likelihood = NonstationaryPoissonLik(state_dim, observation_dim, n_steps, key=rkey, norm_readout=norm_readout)
+        else:
+            self.likelihood = DiagMVNLik(
+                cov=emission_noise * jnp.ones(observation_dim),
+                readout=enn.Linear(state_dim, observation_dim, key=rkey),
+                norm_readout=norm_readout,
+            )
+
         self.obs_encoder, self.back_encoder = approx.get_encoders(
             observation_dim, state_dim, depth, width, enc_key
         )
@@ -386,16 +403,17 @@ class XFADS(TransformerMixin):
         if "s" in static_params:
             self.statenoise.set_static()
 
-    def fit(self, X: tuple[Array, Array], *, key: PRNGKeyArray, mode="em") -> None:
+    def fit(self, X: tuple[Array, Array, Array], *, key: PRNGKeyArray, mode="em") -> None:
         match mode:
             case "em":
-                _train = train
+                _train = train_em
             case "joint":
                 _train = train_joint
             case _:
                 raise ValueError(f"{mode=}")
 
-        y, u = X
+        t, y, u = X
+
         (
             self.dynamics,
             self.likelihood,
@@ -403,6 +421,7 @@ class XFADS(TransformerMixin):
             self.obs_encoder,
             self.back_encoder,
         ) = _train(
+            t,
             y,
             u,
             self.dynamics,
@@ -416,9 +435,9 @@ class XFADS(TransformerMixin):
         )
 
     def transform(
-        self, X: tuple[Array, Array], *, key: PRNGKeyArray
+        self, X: tuple[Array, Array, Array], *, key: PRNGKeyArray
     ) -> tuple[Array, Array]:
-        y, u = X
+        t, y, u = X
 
         smooth = make_batch_smoother(
             self.dynamics,
@@ -428,7 +447,7 @@ class XFADS(TransformerMixin):
             self.back_encoder,
             self.hyperparam,
         )
-        return smooth(y, u, key)
+        return smooth(t, y, u, key)
 
     def modules(self):
         return (

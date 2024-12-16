@@ -110,9 +110,6 @@ def train_em(
     m_modules = util.subdict(modules, ['dynamics', 'state_noise', 'likelihood', 'covariate'])
     e_modules = util.subdict(modules, ['obs_encoder', 'back_encoder'])
 
-    optimizer_m, opt_state_mstep = make_optimizer(m_modules, opt)
-    optimizer_e, opt_state_estep = make_optimizer(e_modules, opt)
-
     @eqx.filter_value_and_grad
     def _loss(trainable_modules, static_modules, y, u, x, key) -> Scalar:
         return batch_loss(trainable_modules | static_modules, y, u, x, key, hyperparam)
@@ -123,21 +120,25 @@ def train_em(
         trainable_modules = eqx.apply_updates(trainable_modules, updates)
         return trainable_modules, opt_state, loss
 
-    estep = eqx.filter_jit(partial(_step, loss_func=_loss, optimizer=optimizer_e))
-    mstep = eqx.filter_jit(partial(_step, loss_func=_loss, optimizer=optimizer_m))
-
     key, em_key = jrandom.split(key)
     old_loss = jnp.inf
     terminate = False
     for i in (pbar := trange(opt.max_outer_iter)):
         try:
             ekey, mkey = jrandom.split(jrandom.fold_in(em_key, i))
+
+            optimizer_e, opt_state_estep = make_optimizer(e_modules, opt)
+            estep = eqx.filter_jit(partial(_step, loss_func=_loss, optimizer=optimizer_e))
             loss_e, e_modules, opt_state_estep = train_loop(
                 e_modules, m_modules, y, u, x, ekey, estep, opt_state_estep, opt
             )
+
+            optimizer_m, opt_state_mstep = make_optimizer(m_modules, opt)
+            mstep = eqx.filter_jit(partial(_step, loss_func=_loss, optimizer=optimizer_m))
             loss_m, m_modules, opt_state_mstep = train_loop(
                 m_modules, e_modules, y, u, x, mkey, mstep, opt_state_mstep, opt
             )
+            
             loss = 0.5 * (loss_e.item() + loss_m.item())
 
             chex.assert_tree_all_finite(loss)

@@ -37,8 +37,11 @@ def smooth(
     approx = hyperparam.approx
     natural_to_moment = jax.vmap(approx.natural_to_moment)
     moment_to_natural = jax.vmap(approx.moment_to_natural)
+    
+    # y_hat = jax.vmap(likelihood.predict)(t)
+    residual = y
 
-    moment_y = jax.vmap(lambda x: approx.constrain_moment(obs_encoder(x)))(y)
+    moment_y = jax.vmap(lambda x: approx.constrain_moment(obs_encoder(x)))(residual)
     nature_y = moment_to_natural(moment_y)
     nature_prior_1 = approx.prior_natural(hyperparam.state_dim)
     
@@ -60,8 +63,8 @@ def smooth(
     def backward(carry, z):
         key, nature_s_tp1 = carry
         subkey, key_t = jrandom.split(key, 2)
-        nature_y_t, nature_f_t = z
-        update = approx.moment_to_natural(approx.constrain_moment(back_encoder(jnp.concatenate((nature_y_t, nature_s_tp1)))))
+        info_y_t, nature_f_t = z
+        update = approx.moment_to_natural(approx.constrain_moment(back_encoder(jnp.concatenate((info_y_t, nature_s_tp1)))))
         nature_s_t = nature_f_t + update
         return (subkey, update), nature_s_t
 
@@ -76,17 +79,15 @@ def smooth(
 
     ## Backward
     nature_s_T = nature_f[-1]   
-    update_s_T = jnp.zeros_like(nature_s_T)
     key, backward_key = jrandom.split(key, 2)
     _, nature_s = scan(
-        backward, init=(backward_key, update_s_T), xs=(nature_y[:-1], nature_f[:-1]), reverse=True
+        backward, init=(backward_key, nature_s_T), xs=(residual[:-1], nature_f[:-1]), reverse=True
     )  # reverse both xs and the output
     nature_s = jnp.vstack((nature_s, nature_s_T))
     moment_s = natural_to_moment(nature_s)
-    moment_s_1 = moment_s[0]
     
     keys = jrandom.split(key, jnp.size(moment_s, 0))
     moment_p = jax.vmap(expected_moment)(keys, moment_s, u)
-    moment_p = jnp.vstack((moment_s_1, moment_p[:-1]))
+    moment_p = jnp.vstack((moment_s[0], moment_p[:-1]))
 
     return moment_s, moment_p

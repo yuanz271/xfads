@@ -83,69 +83,22 @@ class WeightNorm(Module):
         return layer(x)
 
 
-class AddBias(Module):
-    bias: Array
-    out_features: Union[int, Literal["scalar"]] = field(static=True)
-
-    def __init__(
-        self,
-        out_features: Union[int, Literal["scalar"]],
-        *,
-        key: PRNGKeyArray,
-    ):
-        """**Arguments:**
-
-        - `in_features`: The input size. The input to the layer should be a vector of
-            shape `(in_features,)`
-        - `out_features`: The output size. The output from the layer will be a vector
-            of shape `(out_features,)`.
-        - `use_bias`: Whether to add on a bias as well.
-        - `dtype`: The dtype to use for the weight and the bias in this layer.
-            Defaults to either `jax.numpy.float32` or `jax.numpy.float64` depending
-            on whether JAX is in 64-bit mode.
-        - `key`: A `jax.random.PRNGKey` used to provide randomness for parameter
-            initialisation. (Keyword only argument.)
-
-        Note that `in_features` also supports the string `"scalar"` as a special value.
-        In this case the input to the layer should be of shape `()`.
-
-        Likewise `out_features` can also be a string `"scalar"`, in which case the
-        output from the layer will have shape `()`.
-        """
-        out_features_ = 1 if out_features == "scalar" else out_features
-        lim = 1 / math.sqrt(out_features_)
-
-        bshape = (out_features_,)
-        self.bias = jrandom.uniform(key, bshape, minval=-lim, maxval=lim)
-
-        self.out_features = out_features
-
-    @jax.named_scope("xfads.nn.AddBias")
-    def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array:
-        x = x + self.bias
-        if self.out_features == "scalar":
-            assert jnp.shape(x) == (1,)
-            x = jnp.squeeze(x)
-        return x
-
-
 class VariantBiasLinear(Module):
-    biases: Array
+    biases: Array = field(static=True)
     linear: Module
 
-    def __init__(self, state_dim, observation_dim, n_biases, *, key, norm_readout: bool = False):
+    def __init__(self, state_dim, observation_dim, n_biases, biases, *, key, norm_readout: bool = False):
         wkey, bkey = jrandom.split(key, 2)
 
-        self.linear = Linear(state_dim, observation_dim, key=wkey, use_bias=False)
+        self.linear = Linear(state_dim, observation_dim, key=wkey, use_bias=True)
         if norm_readout:
             self.linear = WeightNorm(self.linear)
         
-        lim = 1 / math.sqrt(state_dim)
-        self.biases = jrandom.uniform(bkey, (n_biases, observation_dim), dtype=self.linear.weight.dtype, minval=-lim, maxval=lim)
-
-        # bkeys = jrandom.split(bkey, n_biases)
-        # self.add_bias = [AddBias(observation_dim, key=bkey).__call__ for bkey in bkeys]
-
+        if biases == "none":
+            lim = 1 / math.sqrt(state_dim)
+            self.biases = jrandom.uniform(bkey, (n_biases, observation_dim), dtype=self.linear.weight.dtype, minval=-lim, maxval=lim)
+        else:
+            self.biases = biases
     
     def __call__(self, idx, x):
         x = self.linear(x)

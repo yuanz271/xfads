@@ -272,7 +272,7 @@ class DiagMVN(MVN):
             observation_dim, cls.param_size(state_dim), width, depth, key=obs_key
         )
         back_enc = make_mlp(
-            cls.param_size(state_dim) * 2,
+            observation_dim + cls.param_size(state_dim),
             cls.param_size(state_dim),
             width,
             depth,

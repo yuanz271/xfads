@@ -13,20 +13,11 @@ from equinox import Module, nn as enn
 from sklearn.base import TransformerMixin
 from tqdm import trange
 
-from . import vi, smoothing, distribution, spec, dynamics as dyn_mod
+from . import vi, smoothing, distribution, spec, dynamics as dyn_mod, trainer
 from .dynamics import GaussianStateNoise
 from .vi import DiagMVNLik, Likelihood, NonstationaryPoissonLik, PoissonLik
 from .smoothing import Hyperparam
-
-
-@dataclass
-class Opt:
-    min_iter: int = 0
-    max_inner_iter: int = 1
-    max_em_iter: int = 1
-    learning_rate: float = 1e-3
-    clip_norm: float = 5.0
-    batch_size: int = 1
+from .trainer import Opt
 
 
 def make_batch_smoother(
@@ -36,7 +27,7 @@ def make_batch_smoother(
     obs_encoder,
     back_encoder,
     hyperparam,
-) -> Callable[[Array, Array, PRNGKeyArray], tuple[Array, Array]]:
+) -> Callable[[Array, Array, Array, PRNGKeyArray], tuple[Array, Array]]:
     smooth = jax.vmap(
         partial(
             smoothing.smooth,
@@ -58,7 +49,7 @@ def make_batch_smoother(
 
 def make_batch_elbo(
     eloglik, approx, mc_size
-) -> Callable[[PRNGKeyArray, Array, Array, Array, Optional[Callable]], Scalar]:
+) -> Callable[[PRNGKeyArray, Array, Array, Array, Array, Optional[Callable]], Scalar]:
     elbo = jax.vmap(
         jax.vmap(partial(vi.elbo, eloglik=eloglik, approx=approx, mc_size=mc_size))
     )  # (batch, seq)
@@ -263,7 +254,7 @@ def train_joint(
 
     @eqx.filter_jit
     def joint_step(modules, t, y, u, key, opt_state):
-        loss, grads = loss_func(modules, y, u, key)
+        loss, grads = loss_func(modules, t, y, u, key)
         updates, opt_state = optimizer.update(grads, opt_state, modules)
         modules = eqx.apply_updates(modules, updates)
         return modules, opt_state, loss
@@ -299,6 +290,33 @@ def train_joint(
     return modules
 
 
+# def train_joint(
+#     t: Array,
+#     y: Array,
+#     u: Array,
+#     dynamics,
+#     statenoise,
+#     likelihood: Likelihood,
+#     obs_encoder,
+#     back_encoder,
+#     hyperparam: Hyperparam,
+#     *,
+#     key: PRNGKeyArray,
+#     opt: Opt,
+# ) -> tuple:
+#     chex.assert_rank((y, u), 3)
+
+#     modules = (dynamics, likelihood, statenoise, obs_encoder, back_encoder)
+
+#     @eqx.filter_value_and_grad
+#     def loss_func(modules, key, *data) -> Scalar:
+#         return batch_loss_joint(modules, *data, key, hyperparam)
+
+#     modules, loss = trainer.train_loop(modules, loss_func, t, y, u, key=key, opt=opt)
+
+#     return modules
+
+
 @dataclass
 class XFADS(TransformerMixin):
     hyperparam: Hyperparam
@@ -324,6 +342,7 @@ class XFADS(TransformerMixin):
         approx: str = "DiagMVN",
         observation: str = "gaussian",
         n_steps: int = 1,
+        biases: Array = None,
         norm_readout: bool = False,
         mc_size: int = 1,
         random_state: int = 0,
@@ -346,6 +365,7 @@ class XFADS(TransformerMixin):
             approx=approx,
             observation=observation,
             n_steps=n_steps,
+            biases="none",
             norm_readout=norm_readout,
             mc_size=mc_size,
             random_state=random_state,
@@ -386,7 +406,7 @@ class XFADS(TransformerMixin):
                 readout=enn.Linear(state_dim, observation_dim, key=rkey),
                 norm_readout=norm_readout)
         elif observation == "NonstationaryPoissonLik":
-            self.likelihood = NonstationaryPoissonLik(state_dim, observation_dim, n_steps, key=rkey, norm_readout=norm_readout)
+            self.likelihood = NonstationaryPoissonLik(state_dim, observation_dim, n_steps, biases, key=rkey, norm_readout=norm_readout)
         else:
             self.likelihood = DiagMVNLik(
                 cov=emission_noise * jnp.ones(observation_dim),
@@ -437,7 +457,6 @@ class XFADS(TransformerMixin):
     def transform(
         self, X: tuple[Array, Array, Array], *, key: PRNGKeyArray
     ) -> tuple[Array, Array]:
-        t, y, u = X
 
         smooth = make_batch_smoother(
             self.dynamics,
@@ -447,7 +466,7 @@ class XFADS(TransformerMixin):
             self.back_encoder,
             self.hyperparam,
         )
-        return smooth(t, y, u, key)
+        return smooth(*X, key)
 
     def modules(self):
         return (

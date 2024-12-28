@@ -105,3 +105,28 @@ def train_loop(modules, loss_value_and_grad, *data, key, opt: Opt):
 
 #     return modules, loss
 
+# def train_joint(
+#     t: Array,
+#     y: Array,
+#     u: Array,
+#     dynamics,
+#     statenoise,
+#     likelihood: Likelihood,
+#     obs_encoder,
+#     back_encoder,
+#     hyperparam: Hyperparam,
+#     *,
+#     key: PRNGKeyArray,
+#     opt: Opt,
+# ) -> tuple:
+#     chex.assert_rank((y, u), 3)
+
+#     modules = (dynamics, likelihood, statenoise, obs_encoder, back_encoder)
+
+#     @eqx.filter_value_and_grad
+#     def loss_func(modules, key, *data) -> Scalar:
+#         return batch_loss_joint(modules, *data, key, hyperparam)
+
+#     modules, loss = trainer.train_loop(modules, loss_func, t, y, u, key=key, opt=opt)
+
+#     return modules

@@ -34,4 +34,4 @@ def test_smooth(spec, capsys):
     
     with capsys.disabled():
         print(approx)
-        moment_s, moment_p = smooth(y, u, key=skey, dynamics=f, statenoise=statenoise, obs_encoder=obs_encoder, back_encoder=back_encoder, hyperparam=hyperparam, likelihood=None)
+        moment_s, moment_p = smooth(y, u, key=skey, dynamics=f, statenoise=statenoise, obs_to_update=obs_encoder, back_encoder=back_encoder, hyperparam=hyperparam, likelihood=None)

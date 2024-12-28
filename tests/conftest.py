@@ -9,7 +9,7 @@ def spec():
         observation_dim=10,
         state_dim=2,
         input_dim=0,
-        width=2,
+        width=32,
         depth=2,
         emission_noise=1.0,
         state_noise=1.0,

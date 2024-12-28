@@ -2,6 +2,7 @@ from functools import partial
 import math
 from typing import Any, Callable, Literal, Optional, Sequence, TypeVar, Union
 
+import numpy as np
 import jax
 from jax import nn as jnn, random as jrandom, numpy as jnp
 from jaxtyping import PRNGKeyArray, Array, Scalar

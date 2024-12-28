@@ -18,7 +18,7 @@ MAX_ETA = 5.
 class Likelihood(Module):
     readout: ClassVar[Callable]
     eloglik: ClassVar[Callable]
-    predict: ClassVar[Callable]
+    residual: ClassVar[Callable]
         
 
 class PoissonLik(Likelihood):
@@ -28,7 +28,14 @@ class PoissonLik(Likelihood):
         self.readout = readout
         if norm_readout:
             self.readout = WeightNorm(self.readout)
-    
+
+    def residual(self, t: Array, y: Array):
+        mean_z = jnp.zeros(self.state_dim)
+        eta = self.readout(t, mean_z)
+        eta = jnp.minimum(eta, MAX_ETA)
+        lam = jnp.exp(eta)
+        return lam
+
     def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx, mc_size: int) -> Array:
         y = jnp.broadcast_to(y, (mc_size,) + y.shape)
         chex.assert_shape(y, (mc_size, None))
@@ -47,8 +54,8 @@ class NonstationaryPoissonLik(Likelihood):
     def __init__(self, state_dim, observation_dim, n_steps, biases, *, key, norm_readout: bool = False) -> None:
         self.state_dim = state_dim
         self.readout = VariantBiasLinear(state_dim, observation_dim, n_steps, biases, key=key, norm_readout=norm_readout)
-        
-    def predict(self, t: Array):
+    
+    def residual(self, t: Array, y: Array):
         mean_z = jnp.zeros(self.state_dim)
         eta = self.readout(t, mean_z)
         eta = jnp.minimum(eta, MAX_ETA)
@@ -56,7 +63,6 @@ class NonstationaryPoissonLik(Likelihood):
         return lam
 
     def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx, mc_size: int) -> Array:
-
         mean_z, cov_z = approx.moment_to_canon(moment)
         eta = self.readout(t, mean_z)
         eta = jnp.minimum(eta, MAX_ETA)
@@ -101,10 +107,10 @@ class DiagMVNLik(Likelihood):
         if norm_readout:
             self.readout = WeightNorm(self.readout)
 
-    def predict(self, t: Array):
+    def residual(self, t: Array, y: Array):
         mean_z = jnp.zeros(self.unconstrained_cov.shape[0])
-        eta = self.readout(t, mean_z)
-        return eta
+        eta = self.readout(mean_z)
+        return y - eta
 
     def cov(self):
         return jnn.softplus(self.unconstrained_cov)

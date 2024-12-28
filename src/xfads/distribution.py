@@ -8,6 +8,8 @@ from jax import nn as jnn, numpy as jnp, random as jrandom
 from jaxtyping import Array, Scalar, PRNGKeyArray
 import tensorflow_probability.substrates.jax.distributions as tfp
 
+from .encoder import PseudoObservation
+
 from .nn import make_mlp
 
 
@@ -51,6 +53,9 @@ class MVN(Protocol):
 
     @classmethod
     def constrain_moment(cls, unconstrained: Array) -> Array: ...
+
+    @classmethod
+    def constrain_natural(cls, unconstrained: Array) -> Array: ...
 
     @classmethod
     def noise_moment(cls, noise_cov) -> Array: ...
@@ -142,6 +147,19 @@ class FullMVN(MVN):
         L = jnp.outer(lora, lora)
         V = jnp.diag(jnn.softplus(diag)) + L
         v = V.flatten()
+        return jnp.concatenate((loc, v))
+
+    @classmethod
+    def constrain_natural(cls, unconstrained: Array) -> Array:
+        n = jnp.size(unconstrained)
+        # n = m + m + m
+        # m = sqrt(n + 1) - 1
+        m = n // 3
+
+        loc, diag, lora = jnp.split(unconstrained, [m, m + m])
+        L = jnp.outer(lora, lora)
+        V = jnp.diag(jnn.softplus(diag)) + L
+        v = -V.flatten()  # negative definite
         return jnp.concatenate((loc, v))
 
     @classmethod
@@ -266,18 +284,26 @@ class DiagMVN(MVN):
         return jnp.concatenate((loc, v))
 
     @classmethod
+    def constrain_natural(cls, unconstrained) -> Array:
+        loc, v = jnp.split(unconstrained, 2)
+        v = -jnn.softplus(v)
+        return jnp.concatenate((loc, v))
+
+    @classmethod
     def get_encoders(cls, observation_dim, state_dim, width, depth, key) -> tuple:
         obs_key, back_key = jrandom.split(key)
         obs_enc = make_mlp(
             observation_dim, cls.param_size(state_dim), width, depth, key=obs_key
         )
-        back_enc = make_mlp(
-            observation_dim + cls.param_size(state_dim),
-            cls.param_size(state_dim),
-            width,
-            depth,
-            key=back_key,
-        )
+        # back_enc = make_mlp(
+        #     observation_dim + cls.param_size(state_dim),
+        #     cls.param_size(state_dim),
+        #     width,
+        #     depth,
+        #     key=back_key,
+        # )
+
+        back_enc = PseudoObservation(observation_dim, width, cls.param_size(state_dim), key=back_key)
         return obs_enc, back_enc
 
     @classmethod

@@ -85,13 +85,13 @@ class WeightNorm(Module):
 
 
 class VariantBiasLinear(Module):
-    biases: Array = field(static=True)
+    biases: Array = field(static=False)
     linear: Module
 
     def __init__(self, state_dim, observation_dim, n_biases, biases, *, key, norm_readout: bool = False):
         wkey, bkey = jrandom.split(key, 2)
 
-        self.linear = Linear(state_dim, observation_dim, key=wkey, use_bias=True)
+        self.linear = Linear(state_dim, observation_dim, key=wkey, use_bias=False)
         if norm_readout:
             self.linear = WeightNorm(self.linear)
         

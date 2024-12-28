@@ -55,7 +55,7 @@ class PseudoObservation(Module):
 
     def __init__(self, input_size: int, hidden_size: int, output_size: int, *, key: PRNGKeyArray):
         cell_key, hidden_key, output_key = jrandom.split(key, 3)
-        self.h0 = jrandom.normal(hidden_key, shape=(hidden_key,))
+        self.h0 = jrandom.normal(hidden_key, shape=(hidden_size,))
         self.cell = enn.GRUCell(input_size, hidden_size, key=cell_key)
         self.output_layer = enn.Linear(hidden_size, output_size, key=output_key)
 

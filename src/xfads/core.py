@@ -122,7 +122,6 @@ def smooth_pseudo(
     t: Array,
     y: Array,
     u: Array,
-    nature_f: Array,
     hyperparam: Hyperparam,
 ):
     dynamics, statenoise, likelihood, obs_to_update, pseudo_encoder = modules
@@ -130,9 +129,11 @@ def smooth_pseudo(
     natural_to_moment = jax.vmap(approx.natural_to_moment)
 
     nature_prior_1 = approx.prior_natural(hyperparam.state_dim)  # TODO: trainable prior?
-
-    pseudo_obs = pseudo_encoder(y)
-    pseudo_obs = jax.vmap(approx.constrain_natural)(pseudo_obs)
+    
+    update_obs = jax.vmap(lambda x: approx.constrain_natural(obs_to_update(x)))(y)
+    
+    pseudo_obs = update_obs
+    pseudo_obs = pseudo_obs + jax.vmap(approx.constrain_natural)(pseudo_encoder(y)) 
 
     nature_f_1 = nature_prior_1 + pseudo_obs[0]
     moment_f_1 = approx.natural_to_moment(nature_f_1)

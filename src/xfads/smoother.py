@@ -331,7 +331,7 @@ def train_joint(
     return modules
 
 
-def train_f_and_s(
+def train_pseduo(
     t: Array,
     y: Array,
     u: Array,
@@ -344,35 +344,23 @@ def train_f_and_s(
     *,
     key: Array,
     opt: Opt,
-
 ) -> tuple:
     chex.assert_rank((y, u), 3)
     chex.assert_equal_shape((t, y, u), dims=(0, 1))
 
     modules = (dynamics, statenoise, likelihood, obs_to_update, back_encoder)
-    batch_filter = jax.vmap(partial(core.filter, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
-    batch_smooth = jax.vmap(partial(core.smooth, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0, 0))
+    batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
 
     batch_elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
     
-    def batch_f_loss(modules, key, tb, yb, ub) -> Scalar:        
+    def batch_loss(modules, key, tb, yb, ub) -> Scalar:        
         skey, lkey = jrandom.split(key)
         fkeys = jrandom.split(skey, len(tb))
         
         chex.assert_equal_shape((fkeys, tb, yb, ub), dims=0)
         chex.assert_equal_shape((tb, yb, ub), dims=(0, 1))
 
-        _, moment_s, moment_p = batch_filter(modules, fkeys, tb, yb, ub)
-        return -batch_elbo(lkey, tb, moment_s, moment_p, yb)
-
-    def batch_s_loss(modules, key, tb, yb, ub, nb) -> Scalar:
-        skey, lkey = jrandom.split(key)
-        fkeys = jrandom.split(skey, len(tb))
-
-        chex.assert_equal_shape((fkeys, tb, yb, ub), dims=0)
-        chex.assert_equal_shape((tb, yb, ub), dims=(0, 1))
-
-        _, moment_s, moment_p = batch_smooth(modules, fkeys, tb, yb, ub, nb)
+        _, moment_s, moment_p = batch_smooth(modules, fkeys, tb, yb, ub)
         return -batch_elbo(lkey, tb, moment_s, moment_p, yb)
 
     def _train(modules, key, batch_loss_func, *args):
@@ -392,51 +380,30 @@ def train_f_and_s(
 
         old_loss = jnp.inf
         terminate = False
+        with trange(opt.max_inner_iter * opt.max_em_iter) as pbar:
+            for i in pbar:
+                try:
+                    key_i = jrandom.fold_in(key, i)
+                    for minibatch_key, *argm in loader2(*args, batch_size=opt.batch_size, key=key_i):
+                        modules, opt_state, loss = step(modules, minibatch_key, opt_state, *argm)
+                except KeyboardInterrupt:
+                    terminate = True
+                
+                key, subkey = jrandom.split(key, 2)
+                loss = batch_loss_func(modules, subkey, *args)
+                pbar.set_postfix({'loss': f"{loss:.3f}"})
 
-        for i in range(opt.max_inner_iter):
-            try:
-                key_i = jrandom.fold_in(key, i)
-                total_loss = 0.0
-                n_minibatch = 0
-                for minibatch_key, *argm in loader2(*args, batch_size=opt.batch_size, key=key_i):
-                    modules, opt_state, loss = step(modules, minibatch_key, opt_state, *argm)
-                    total_loss += loss
-                    n_minibatch += 1
-                total_loss = total_loss / max(n_minibatch, 1)
+                if terminate:
+                    break
 
-                chex.assert_tree_all_finite(total_loss)
-            except KeyboardInterrupt:
-                terminate = True
+                if jnp.isclose(loss, old_loss) and i > opt.min_iter:
+                    break
 
-            if terminate:
-                break
+                old_loss = loss
 
-            if jnp.isclose(total_loss, old_loss) and i > opt.min_iter:
-                break
+            return modules, loss
 
-            old_loss = total_loss
-
-        return modules, total_loss
-
-    old_loss = jnp.inf
-    terminate = False
-    with trange(opt.max_em_iter) as pbar:
-        for j in pbar:
-            key_j = jrandom.fold_in(key, j)
-            zkey, fkey, skey = jrandom.split(key_j, 3)
-            modules, loss = _train(modules, fkey, batch_f_loss, t, y, u)
-            zkeys = jrandom.split(zkey, jnp.size(t, 0))
-            nature_f, *_ = batch_filter(modules, zkeys, t, y, u)
-            modules, loss = _train(modules, skey, batch_s_loss, t, y, u, nature_f)
-            pbar.set_postfix({'-ELBO': f"{loss:.3f}"})
-        
-            if terminate:
-                break
-
-            if jnp.isclose(loss, old_loss) and j > opt.min_iter:
-                break
-
-            loss = old_loss
+    modules, loss = _train(modules, key, batch_loss, t, y, u)
 
     return modules
 
@@ -554,7 +521,7 @@ class XFADS(TransformerMixin):
             case "joint":
                 _train = train_joint
             case "fs":
-                _train = train_f_and_s
+                _train = train_pseduo
             case _:
                 raise ValueError(f"Unknown {mode=}")
 
@@ -583,16 +550,21 @@ class XFADS(TransformerMixin):
     def transform(
         self, X: tuple[Array, Array, Array], *, key: Array
     ) -> tuple[Array, Array]:
+        batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=self.hyperparam), in_axes=(None, 0, 0, 0, 0))
 
-        smooth = make_batch_smoother(
-            self.dynamics,
-            self.statenoise,
-            self.likelihood,
-            self.obs_to_update,
-            self.back_encoder,
-            self.hyperparam,
-        )
-        return smooth(*X, key)
+        keys = jrandom.split(key, len(X[0]))
+        
+        _, moment_s, moment_p = batch_smooth(self.modules(), keys, *X)        
+        # smooth = make_batch_smoother(
+        #     self.dynamics,
+        #     self.statenoise,
+        #     self.likelihood,
+        #     self.obs_to_update,
+        #     self.back_encoder,
+        #     self.hyperparam,
+        # )
+        # return smooth(*X, key)
+        return moment_s, moment_p
 
     def modules(self):
         return (

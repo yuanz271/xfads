@@ -270,7 +270,7 @@ class DiagMVN(MVN):
     @classmethod
     def prior_natural(cls, state_dim) -> Array:
         """Return standard normal in natural parameter form"""
-        moment = cls.canon_to_moment(jnp.zeros(state_dim), jnp.ones(state_dim))
+        moment = cls.canon_to_moment(jnp.zeros(state_dim), 5 * jnp.ones(state_dim))
         return cls.moment_to_natural(moment)
 
     @classmethod

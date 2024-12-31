@@ -269,87 +269,85 @@ def train_em(
     return m_modules + e_modules
 
 
-def train_joint(
+# def train_joint(
+#     modules,
+#     t: Array,
+#     y: Array,
+#     u: Array,
+#     hyperparam: Hyperparam,
+#     *,
+#     key: Array,
+#     opt: Opt,
+# ) -> tuple:
+#     chex.assert_rank((y, u), 3)
+
+#     # modules = (dynamics, statenoise, likelihood, obs_to_update, back_encoder)
+
+#     optimizer, opt_state_step = make_optimizer(modules, opt)
+
+#     @eqx.filter_value_and_grad
+#     def loss_func(modules, t, y, u, key) -> Scalar:
+#         return batch_loss_joint(modules, t, y, u, key, hyperparam)
+
+#     @eqx.filter_jit
+#     def joint_step(modules, t, y, u, key, opt_state):
+#         loss, grads = loss_func(modules, t, y, u, key)
+#         updates, opt_state = optimizer.update(grads, opt_state, modules)
+#         modules = eqx.apply_updates(modules, updates)
+#         return modules, opt_state, loss
+
+#     key, em_key = jrandom.split(key)
+#     old_loss = jnp.inf
+#     terminate = False
+#     max_inner_iter = opt.max_inner_iter
+#     opt.max_inner_iter = 1
+#     for i in (pbar := trange(opt.max_em_iter * max_inner_iter)):
+#         try:
+#             it_key = jrandom.fold_in(em_key, i)
+#             loss_joint, modules, opt_state_step = train_loop(
+#                 modules, t, y, u, it_key, joint_step, opt_state_step, opt
+#             )
+
+#             loss = loss_joint.item()
+
+#             chex.assert_tree_all_finite(loss)
+#             pbar.set_postfix({"loss": f"{loss:.3f}"})
+#         except KeyboardInterrupt:
+#             terminate = True
+
+#         if terminate:
+#             break
+
+#         if jnp.isclose(loss, old_loss) and i > opt.min_iter:
+#             break
+
+#         old_loss = loss
+
+#     opt.max_inner_iter = max_inner_iter  # hack
+#     return modules
+
+
+def train_pseudo(
+    modules,
     t: Array,
     y: Array,
     u: Array,
-    dynamics,
-    statenoise,
-    likelihood: Likelihood,
-    obs_to_update,
-    back_encoder,
     hyperparam: Hyperparam,
     *,
     key: Array,
     opt: Opt,
-) -> tuple:
-    chex.assert_rank((y, u), 3)
-
-    modules = (dynamics, statenoise, likelihood, obs_to_update, back_encoder)
-
-    optimizer, opt_state_step = make_optimizer(modules, opt)
-
-    @eqx.filter_value_and_grad
-    def loss_func(modules, t, y, u, key) -> Scalar:
-        return batch_loss_joint(modules, t, y, u, key, hyperparam)
-
-    @eqx.filter_jit
-    def joint_step(modules, t, y, u, key, opt_state):
-        loss, grads = loss_func(modules, t, y, u, key)
-        updates, opt_state = optimizer.update(grads, opt_state, modules)
-        modules = eqx.apply_updates(modules, updates)
-        return modules, opt_state, loss
-
-    key, em_key = jrandom.split(key)
-    old_loss = jnp.inf
-    terminate = False
-    max_inner_iter = opt.max_inner_iter
-    opt.max_inner_iter = 1
-    for i in (pbar := trange(opt.max_em_iter * max_inner_iter)):
-        try:
-            it_key = jrandom.fold_in(em_key, i)
-            loss_joint, modules, opt_state_step = train_loop(
-                modules, t, y, u, it_key, joint_step, opt_state_step, opt
-            )
-
-            loss = loss_joint.item()
-
-            chex.assert_tree_all_finite(loss)
-            pbar.set_postfix({"loss": f"{loss:.3f}"})
-        except KeyboardInterrupt:
-            terminate = True
-
-        if terminate:
-            break
-
-        if jnp.isclose(loss, old_loss) and i > opt.min_iter:
-            break
-
-        old_loss = loss
-
-    opt.max_inner_iter = max_inner_iter  # hack
-    return modules
-
-
-def train_pseduo(
-    t: Array,
-    y: Array,
-    u: Array,
-    dynamics,
-    statenoise,
-    likelihood: Likelihood,
-    obs_to_update,
-    back_encoder,
-    hyperparam: Hyperparam,
-    *,
-    key: Array,
-    opt: Opt,
+    mode: str,
 ) -> tuple:
     chex.assert_rank((y, u), 3)
     chex.assert_equal_shape((t, y, u), dims=(0, 1))
-
-    modules = (dynamics, statenoise, likelihood, obs_to_update, back_encoder)
-    batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
+    
+    # modules = (dynamics, statenoise, likelihood, obs_to_update, back_encoder)
+    dynamics, statenoise, likelihood, obs_to_update, back_encoder = modules
+    
+    if mode == "pseudo":
+        batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
+    else:
+        batch_smooth = jax.vmap(partial(core.smooth, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
 
     batch_elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
     
@@ -514,14 +512,14 @@ class XFADS(TransformerMixin):
         if "s" in static_params:
             self.statenoise.set_static()
 
-    def fit(self, X: tuple[Array, Array, Array], *, key, mode="em") -> None:
+    def fit(self, X: tuple[Array, Array, Array], *, key, mode="joint") -> None:
         match mode:
             case "em":
                 _train = train_em
             case "joint":
-                _train = train_joint
-            case "fs":
-                _train = train_pseduo
+                _train = partial(train_pseudo, mode=mode)
+            case "pseudo":
+                _train = partial(train_pseudo, mode=mode)
             case _:
                 raise ValueError(f"Unknown {mode=}")
 
@@ -534,23 +532,22 @@ class XFADS(TransformerMixin):
             self.obs_to_update,
             self.back_encoder,
         ) = _train(
+            self.modules(),
             t,
             y,
             u,
-            self.dynamics,
-            self.statenoise,
-            self.likelihood,
-            self.obs_to_update,
-            self.back_encoder,
             self.hyperparam,
             key=key,
             opt=self.opt,
         )
 
     def transform(
-        self, X: tuple[Array, Array, Array], *, key: Array
+        self, X: tuple[Array, Array, Array], *, key: Array, mode: str
     ) -> tuple[Array, Array]:
-        batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=self.hyperparam), in_axes=(None, 0, 0, 0, 0))
+        if mode == "pseudo":
+            batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=self.hyperparam), in_axes=(None, 0, 0, 0, 0))
+        else:
+            batch_smooth = jax.vmap(partial(core.smooth, hyperparam=self.hyperparam), in_axes=(None, 0, 0, 0, 0))
 
         keys = jrandom.split(key, len(X[0]))
         

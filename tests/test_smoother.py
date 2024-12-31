@@ -19,7 +19,7 @@ def test_xfads(spec: ModelSpec, capsys):
     x = jnp.zeros((N, T, spec['covariate_dim']))
 
     with capsys.disabled():
-        xfads.fit((t, y, u), key=jrandom.key(0), mode="fs")
+        xfads.fit((t, y, u), key=jrandom.key(0), mode="joint")
 
     with TemporaryDirectory() as tmpdir:
         xfads.save_model(f"{tmpdir}/model.eqx")

@@ -29,23 +29,24 @@ class GaussianStateNoise(Module):
         self.__dataclass_fields__['unconstrained_cov'].metadata = {'static': static}
 
 
-class Diffusion(Module):
+class Diffusion(GaussianStateNoise):
     def __init__(
         self,
         state_dim: int,
         input_dim: int,
         width: int,
         depth: int,
+        cov,
         *,
         key: PRNGKeyArray,
     ):
-        pass
+        super().__init__(cov)
 
     def __call__(self, z: Array, u: Array) -> Array:
         return z
 
 
-class Nonlinear(Module):
+class Nonlinear(GaussianStateNoise):
     forward: Module = field(init=False)
 
     def __init__(
@@ -54,9 +55,11 @@ class Nonlinear(Module):
         input_dim: int,
         width: int,
         depth: int,
+        cov,
         *,
         key: PRNGKeyArray,
     ):
+        super().__init__(cov)
         self.forward = make_mlp(
             state_dim + input_dim, state_dim, width, depth, key=key
         )
@@ -66,7 +69,7 @@ class Nonlinear(Module):
         return self.forward(x)
 
 
-class LinearRecurrent(Module):
+class LinearRecurrent(GaussianStateNoise):
     recurrent: Module = field(init=False)
     drive: Module = field(init=False)
 
@@ -76,9 +79,11 @@ class LinearRecurrent(Module):
         input_dim: int,
         width: int,
         depth: int,
+        cov,
         *,
         key: PRNGKeyArray,
     ):
+        super().__init__(cov)
         recurrent_key, input_key = jrandom.split(key)
         self.drive = make_mlp(
             state_dim + input_dim, state_dim, width, depth, key=input_key
@@ -90,7 +95,7 @@ class LinearRecurrent(Module):
         return self.recurrent(z) + self.drive(x)
     
 
-class LocallyLinearInput(Module):
+class LocallyLinearInput(GaussianStateNoise):
     B_shape: tuple[int, int] = eqx.field(static=True, init=False)
     recurrent: Module = eqx.field(init=False)
     drive: Module = eqx.field(init=False)
@@ -101,9 +106,11 @@ class LocallyLinearInput(Module):
         input_dim: int,
         width: int,
         depth: int,
+        cov,
         *,
         key: PRNGKeyArray,
     ):
+        super().__init__(cov)
         recurrent_key, input_key = jrandom.split(key)
         self.drive = make_mlp(
             state_dim, state_dim * input_dim, width, depth, key=input_key
@@ -117,7 +124,7 @@ class LocallyLinearInput(Module):
         return self.recurrent(z) + B @ u
     
 
-class LinearInput(Module):
+class LinearInput(GaussianStateNoise):
     recurrent: Module = field(init=False)
     drive: Module = field(init=False)
 
@@ -127,9 +134,11 @@ class LinearInput(Module):
         input_dim: int,
         width: int,
         depth: int,
+        cov,
         *,
         key: PRNGKeyArray,
     ):
+        super().__init__(cov)
         recurrent_key, input_key = jrandom.split(key)
         self.recurrent = make_mlp(
             state_dim, state_dim, width, depth, key=recurrent_key

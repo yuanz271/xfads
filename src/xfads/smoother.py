@@ -14,7 +14,7 @@ from sklearn.base import TransformerMixin
 from tqdm import trange
 
 from . import vi, smoothing, distribution, spec, dynamics as dyn_mod, core
-from .dynamics import GaussianStateNoise
+from .dynamics import GaussianStateNoise, Nonlinear
 from .vi import DiagMVNLik, Likelihood, NonstationaryPoissonLik, PoissonLik
 from .smoothing import Hyperparam
 from .trainer import Opt
@@ -346,6 +346,8 @@ def train_pseudo(
     
     if mode == "pseudo":
         batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
+    elif mode == "bi":
+        batch_smooth = jax.vmap(partial(core.bismooth, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
     else:
         batch_smooth = jax.vmap(partial(core.smooth, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
 
@@ -486,7 +488,8 @@ class XFADS(TransformerMixin):
             state_dim=state_dim,
             input_dim=input_dim,
             width=width,
-            depth=depth
+            depth=depth,
+            cov=state_noise * jnp.ones(state_dim),
             )
         self.statenoise = GaussianStateNoise(state_noise * jnp.ones(state_dim))
 
@@ -506,11 +509,20 @@ class XFADS(TransformerMixin):
         self.obs_to_update, self.back_encoder = approx.get_encoders(
             observation_dim, state_dim, depth, width, enc_key
         )
+        # NOTE: temporary
+        self.back_encoder = Nonlinear(
+            key=dkey,
+            state_dim=state_dim,
+            input_dim=input_dim,
+            width=width,
+            depth=depth,
+            cov=state_noise * jnp.ones(state_dim),
+            )
 
         if "l" in static_params:
             self.likelihood.set_static()
         if "s" in static_params:
-            self.statenoise.set_static()
+            self.dynamics.set_static()
 
     def fit(self, X: tuple[Array, Array, Array], *, key, mode="joint") -> None:
         match mode:
@@ -519,6 +531,8 @@ class XFADS(TransformerMixin):
             case "joint":
                 _train = partial(train_pseudo, mode=mode)
             case "pseudo":
+                _train = partial(train_pseudo, mode=mode)
+            case "bi":
                 _train = partial(train_pseudo, mode=mode)
             case _:
                 raise ValueError(f"Unknown {mode=}")
@@ -546,6 +560,8 @@ class XFADS(TransformerMixin):
     ) -> tuple[Array, Array]:
         if mode == "pseudo":
             batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=self.hyperparam), in_axes=(None, 0, 0, 0, 0))
+        elif mode == "bi":
+            batch_smooth = jax.vmap(partial(core.bismooth, hyperparam=self.hyperparam), in_axes=(None, 0, 0, 0, 0))
         else:
             batch_smooth = jax.vmap(partial(core.smooth, hyperparam=self.hyperparam), in_axes=(None, 0, 0, 0, 0))
 

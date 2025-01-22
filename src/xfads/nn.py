@@ -13,13 +13,15 @@ from equinox.nn import Linear
 EPS = 1e-6
 
 
-def make_mlp(in_size, out_size, width, depth, *, key: PRNGKeyArray, activation: Callable=jnn.tanh):
-    keys = jrandom.split(key, depth + 2)
-    layers = [enn.Linear(in_size, width, key=keys[0]), enn.Lambda(activation)]
-    for i in range(depth):
-        layers.append(enn.Linear(width, width, key=keys[i + 1]))
+def make_mlp(in_size, out_size, width, depth, *, key: PRNGKeyArray, activation: Callable=jnn.swish):
+    key, layer_key = jrandom.split(key)
+    layers = [enn.Linear(in_size, width, key=layer_key), enn.Lambda(activation)]
+    for i in range(depth - 1):
+        key, layer_key = jrandom.split(key) 
+        layers.append(enn.Linear(width, width, key=layer_key))
         layers.append(enn.Lambda(activation))
-    layers.append(enn.Linear(width, out_size, key=keys[-1]))
+    key, layer_key = jrandom.split(key)
+    layers.append(enn.Linear(width, out_size, key=layer_key))
     return enn.Sequential(layers)
 
 

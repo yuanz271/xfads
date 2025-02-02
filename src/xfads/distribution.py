@@ -129,7 +129,7 @@ class FullMVN(MVN):
 
     @classmethod
     def prior_natural(cls, state_dim) -> Array:
-        moment = cls.canon_to_moment(jnp.zeros(state_dim), 5 * jnp.eye(state_dim))
+        moment = cls.canon_to_moment(jnp.zeros(state_dim), jnp.eye(state_dim))
         return cls.moment_to_natural(moment)
 
     @classmethod
@@ -271,7 +271,7 @@ class DiagMVN(MVN):
     @classmethod
     def prior_natural(cls, state_dim) -> Array:
         """Return standard normal in natural parameter form"""
-        moment = cls.canon_to_moment(jnp.zeros(state_dim), 10 * jnp.ones(state_dim))
+        moment = cls.canon_to_moment(jnp.zeros(state_dim), jnp.ones(state_dim))
         return cls.moment_to_natural(moment)
 
     @classmethod

@@ -290,13 +290,13 @@ class DiagMVN(MVN):
         return jnp.concatenate((loc, v))
 
     @classmethod
-    def get_encoders(cls, observation_dim, state_dim, width, depth, key) -> tuple:
+    def get_encoders(cls, observation_dim, state_dim, input_dim, width, depth, key) -> tuple:
         obs_key, back_key = jrandom.split(key)
         obs_enc = make_mlp(
             observation_dim, cls.param_size(state_dim), width, depth, key=obs_key
         )
         back_enc = make_mlp(
-            cls.param_size(state_dim) + cls.param_size(state_dim),
+            cls.param_size(state_dim) + input_dim,
             cls.param_size(state_dim),
             width,
             depth,

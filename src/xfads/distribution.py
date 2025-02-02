@@ -229,10 +229,11 @@ class DiagMVN(MVN):
         return jnp.concatenate((nat1, nat2))
 
     @classmethod
-    def sample_by_moment(cls, key, moment, mc_size) -> Array:
+    def sample_by_moment(cls, key, moment, mc_size=None) -> Array:
         mean, cov = cls.moment_to_canon(moment)
+        shape = None if mc_size is None else (mc_size,)
         return jrandom.multivariate_normal(
-            key, mean, jnp.diag(cov), shape=(mc_size,)
+            key, mean, jnp.diag(cov), shape=shape
         )  # It seems JAX does the reparameterization trick
 
     @classmethod

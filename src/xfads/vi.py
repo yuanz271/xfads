@@ -12,7 +12,7 @@ from .nn import WeightNorm, softplus_inverse, VariantBiasLinear
 from .distribution import MVN, DiagMVN
 
 
-MAX_ETA = 5.
+MAX_ETA = 3.
 
 
 class Likelihood(Module):
@@ -31,20 +31,27 @@ class PoissonLik(Likelihood):
 
     def residual(self, t: Array, y: Array):
         mean_z = jnp.zeros(self.state_dim)
-        eta = self.readout(t, mean_z)
+        eta = self.readout(mean_z)
         eta = jnp.minimum(eta, MAX_ETA)
         lam = jnp.exp(eta)
         return lam
 
     def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx, mc_size: int) -> Array:
-        y = jnp.broadcast_to(y, (mc_size,) + y.shape)
-        chex.assert_shape(y, (mc_size, None))
-        z = DiagMVN.sample_by_moment(key, moment, mc_size)
-        eta = jax.vmap(self.readout)(z)
-        eta = jnp.clip(eta, max=MAX_ETA)
-        rate = jnp.exp(eta)
-        ll = tfp.Poisson(rate=rate).log_prob(y)
-        return jnp.mean(ll, axis=0)
+        # y = jnp.broadcast_to(y, (mc_size,) + y.shape)
+        # chex.assert_shape(y, (mc_size, None))
+        # z = DiagMVN.sample_by_moment(key, moment, mc_size)
+        # eta = jax.vmap(self.readout)(z)
+        # eta = jnp.clip(eta, max=MAX_ETA)
+        # rate = jnp.exp(eta)
+        # ll = tfp.Poisson(rate=rate).log_prob(y)
+        # return jnp.mean(ll, axis=0)
+        mean_z, cov_z = approx.moment_to_canon(moment)
+        eta = self.readout(mean_z)
+        eta = jnp.minimum(eta, MAX_ETA)
+        lam = jnp.exp(eta)
+        ll = jnp.sum(y*eta - lam)
+        # ll = tfp.Poisson(log_rate=eta).log_prob(y)
+        return ll
 
 
 class NonstationaryPoissonLik(Likelihood):

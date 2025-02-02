@@ -107,3 +107,23 @@ class VariantBiasLinear(Module):
         x = self.linear(x)
         return x + self.biases[idx]
         # return jax.lax.switch(idx, self.add_bias, x)
+
+
+def gauss_rbf(x, c, s):
+    return jnp.exp(-jnp.sum(jnp.square((x - c)) * s))
+
+
+class RBFN(Module):
+    centers: Array
+    scale: Scalar
+    readout: Module
+
+    def __init__(self, input_size, output_size, network_size, *, key, normalized: bool = False):
+        key, ckey=jrandom.split(key)
+        self.centers = jrandom.uniform(ckey, shape=(network_size, input_size), minval=-1, maxval=1)
+        self.scale = 0.1
+        self.readout = Linear(network_size, output_size, key=key)
+
+    def __call__(self, x):
+        kernels = jax.vmap(gauss_rbf, in_axes=(None, 0, None))(x, self.centers, self.scale)
+        return self.readout(kernels)

@@ -1,4 +1,5 @@
 from dataclasses import field
+from functools import partial
 
 import jax
 from jax import numpy as jnp, nn as jnn, random as jrandom
@@ -6,7 +7,7 @@ from jaxtyping import Array, PRNGKeyArray
 import equinox as eqx
 from equinox import Module, nn as enn
 
-from .nn import make_mlp, softplus_inverse
+from .nn import make_mlp, softplus_inverse, RBFN
 from .distribution import MVN
 
 # TODO: decouple noise and transition
@@ -64,9 +65,36 @@ class Nonlinear(GaussianStateNoise):
             state_dim + input_dim, state_dim, width, depth, key=key
         )
 
-    def __call__(self, z: Array, u: Array) -> Array:
+    def __call__(self, z: Array, u: Array, reverse: bool = False) -> Array:
         x = jnp.concatenate((z, u), axis=-1)
         return self.forward(x)
+    
+
+class RBFNLinear(GaussianStateNoise):
+    forward: Module = field(init=False)
+    drive: Module = field(init=False)
+    
+    def __init__(
+        self,
+        state_dim: int,
+        input_dim: int,
+        width: int,
+        depth: int,
+        cov,
+        *,
+        key: PRNGKeyArray,
+    ):
+        super().__init__(cov)
+
+        fkey, dkey = jrandom.split(key)
+        self.forward = RBFN(
+            state_dim, state_dim, width, key=fkey
+        )
+        self.drive = enn.Linear(input_dim, state_dim, use_bias=False, key=dkey)
+
+
+    def __call__(self, z: Array, u: Array, reverse: bool = False) -> Array:
+        return z + self.forward(z) + self.drive(u)
 
 
 class LinearRecurrent(GaussianStateNoise):
@@ -155,10 +183,10 @@ def build_dynamics(name: str, *, key, **kwargs) -> Module:
 
 
 def predict_moment(
-    z: Array, u: Array, forward, noise: GaussianStateNoise, approx: MVN
+    z: Array, u: Array, f, noise: GaussianStateNoise, approx: MVN, reverse: bool
 ) -> Array:
     """mu[t](z[t-1])"""
-    ztp1 = forward(z, u)
+    ztp1 = f(z, u, reverse)
     M2 = approx.noise_moment(noise.cov())
     # match approx():
     #     case DiagMVN():
@@ -177,17 +205,18 @@ def sample_expected_moment(
     key: PRNGKeyArray,
     moment: Array,
     u: Array,
-    forward,
+    f,
     noise: GaussianStateNoise,
     approx: MVN,
     mc_size: int,
+    reverse: bool = False,
 ) -> Array:
     """E[mu[t](z[t-1])]"""
     z = approx.sample_by_moment(key, moment, mc_size)
     u_shape = (mc_size,) + u.shape
     u = jnp.broadcast_to(u, shape=u_shape)
-    f = jax.vmap(
-        lambda x, y: predict_moment(x, y, forward, noise, approx), in_axes=(0, 0)
+    vf = jax.vmap(
+        partial(predict_moment, f=f, noise=noise, approx=approx, reverse=reverse), in_axes=(0, 0)
     )
-    moment = jnp.mean(f(z, u), axis=0)
+    moment = jnp.mean(vf(z, u), axis=0)
     return moment

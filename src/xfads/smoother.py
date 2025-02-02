@@ -3,7 +3,7 @@ from functools import partial
 from typing import Callable, Optional, Self
 import json
 
-from jaxtyping import Array, PyTree, Scalar
+from jaxtyping import Array, Scalar, Float
 import jax
 from jax import numpy as jnp, random as jrandom
 import optax
@@ -14,7 +14,7 @@ from sklearn.base import TransformerMixin
 from tqdm import trange
 
 from . import vi, smoothing, distribution, spec, dynamics as dyn_mod, core
-from .dynamics import GaussianStateNoise, Nonlinear
+from .dynamics import GaussianStateNoise
 from .vi import DiagMVNLik, Likelihood, NonstationaryPoissonLik, PoissonLik
 from .smoothing import Hyperparam
 from .trainer import Opt
@@ -352,16 +352,48 @@ def train_pseudo(
         batch_smooth = jax.vmap(partial(core.smooth, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
 
     batch_elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
+
+    def batch_sample(key, moment: Float[Array, "batch time moment"], approx) -> Float[Array, "batch time variable"]:
+        def seq_sample(key, moment: Float[Array, "time moment"]):
+            keys = jrandom.split(key, jnp.size(moment, 0))
+            ret = jax.vmap(approx.sample_by_moment)(keys, moment)
+            chex.assert_shape(ret, moment.shape[:1] + (None,))  
+            return ret
+        
+        keys = jrandom.split(key, jnp.size(moment, 0))
+        ret = jax.vmap(seq_sample)(keys, moment)
+        # jax.debug.print("\nmoment shape={shape}\n", shape=moment.shape)
+        chex.assert_shape(ret, moment.shape[:2] + (None,))
+        
+        return ret
     
+    def batch_fb_predict(modules, z, u):
+        forward_dynamics, statenoise, likelihood, obs_to_update, backward_dynamics = modules
+        ztp1 = eqx.filter_vmap(eqx.filter_vmap(forward_dynamics))(z, u)
+        zt = eqx.filter_vmap(eqx.filter_vmap(backward_dynamics))(ztp1, u)
+        return zt
+
+    def batch_bf_predict(modules, z, u):
+        forward_dynamics, statenoise, likelihood, obs_to_update, backward_dynamics = modules
+        ztm1 = eqx.filter_vmap(eqx.filter_vmap(backward_dynamics))(z, u)
+        zt = eqx.filter_vmap(eqx.filter_vmap(forward_dynamics))(ztm1, u)
+        return zt
+
     def batch_loss(modules, key, tb, yb, ub) -> Scalar:        
-        skey, lkey = jrandom.split(key)
+        key, skey, lkey = jrandom.split(key, 3)
         fkeys = jrandom.split(skey, len(tb))
         
         chex.assert_equal_shape((fkeys, tb, yb, ub), dims=0)
         chex.assert_equal_shape((tb, yb, ub), dims=(0, 1))
 
         _, moment_s, moment_p = batch_smooth(modules, fkeys, tb, yb, ub)
-        return -batch_elbo(lkey, tb, moment_s, moment_p, yb)
+        
+        zb = batch_sample(key, moment_s, hyperparam.approx)
+        zb_hat_fb = batch_fb_predict(modules, zb, ub)
+        zb_hat_bf = batch_bf_predict(modules, zb, ub)
+        penalty = jnp.mean((zb - zb_hat_fb) ** 2) + jnp.mean((zb - zb_hat_bf) ** 2)
+        
+        return -batch_elbo(lkey, tb, moment_s, moment_p, yb) + hyperparam.regular * penalty
 
     def _train(modules, key, batch_loss_func, *args):
 
@@ -442,6 +474,7 @@ class XFADS(TransformerMixin):
         max_inner_iter: int = 1,
         batch_size: int = 1,
         static_params: str = "",
+        regular: float = 1.,
     ) -> None:
         self.spec: spec.ModelSpec = dict(
             observation_dim=observation_dim,
@@ -465,13 +498,14 @@ class XFADS(TransformerMixin):
             max_inner_iter=max_inner_iter,
             batch_size=batch_size,
             static_params=static_params,
+            regular=regular,
         )
 
         key = jrandom.key(random_state)
         approx = getattr(distribution, approx, distribution.DiagMVN)
 
         self.hyperparam = Hyperparam(
-            approx, state_dim, input_dim, observation_dim, covariate_dim, mc_size
+            approx, state_dim, input_dim, observation_dim, covariate_dim, mc_size, regular
         )
         self.opt = Opt(
             min_iter=min_iter,
@@ -480,11 +514,11 @@ class XFADS(TransformerMixin):
             batch_size=batch_size,
         )
 
-        key, dkey, rkey, enc_key = jrandom.split(key, 4)
+        key, fkey, bkey, rkey, enc_key = jrandom.split(key, 5)
         
         dynamics_class = getattr(dyn_mod, dynamics)
         self.dynamics = dynamics_class(
-            key=dkey,
+            key=fkey,
             state_dim=state_dim,
             input_dim=input_dim,
             width=width,
@@ -492,14 +526,18 @@ class XFADS(TransformerMixin):
             cov=state_noise * jnp.ones(state_dim),
             )
         self.statenoise = GaussianStateNoise(state_noise * jnp.ones(state_dim))
-
-        if observation == "poisson":
+        
+        # likelihood_class = getattr(vi, observation)
+        if observation == "PoissonLik":
+            print(observation)
             self.likelihood = PoissonLik(
                 readout=enn.Linear(state_dim, observation_dim, key=rkey),
                 norm_readout=norm_readout)
         elif observation == "NonstationaryPoissonLik":
+            print(observation)
             self.likelihood = NonstationaryPoissonLik(state_dim, observation_dim, n_steps, biases, key=rkey, norm_readout=norm_readout)
         else:
+            print(observation)
             self.likelihood = DiagMVNLik(
                 cov=emission_noise * jnp.ones(observation_dim),
                 readout=enn.Linear(state_dim, observation_dim, key=rkey),
@@ -507,11 +545,11 @@ class XFADS(TransformerMixin):
             )
 
         self.obs_to_update, self.back_encoder = approx.get_encoders(
-            observation_dim, state_dim, depth, width, enc_key
+            observation_dim, state_dim, input_dim, depth, width, enc_key
         )
         # NOTE: temporary
-        self.back_encoder = Nonlinear(
-            key=dkey,
+        self.back_encoder = dynamics_class(
+            key=bkey,
             state_dim=state_dim,
             input_dim=input_dim,
             width=width,

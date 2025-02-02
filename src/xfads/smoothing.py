@@ -23,6 +23,7 @@ class Hyperparam:
     observation_dim: int
     covariate_dim: int
     mc_size: int
+    regular: float = 0.01
 
 
 def smooth(

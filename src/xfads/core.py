@@ -147,8 +147,10 @@ def bismooth(
     forward_dynamics, statenoise, likelihood, obs_to_update, backward_dynamics = modules
     approx = hyperparam.approx
     natural_to_moment = jax.vmap(approx.natural_to_moment)
-    expected_moment_forward = partial(sample_expected_moment, forward=forward_dynamics, noise=forward_dynamics, approx=approx, mc_size=hyperparam.mc_size)
-    expected_moment_backward = partial(sample_expected_moment, forward=backward_dynamics, noise=backward_dynamics, approx=approx, mc_size=hyperparam.mc_size)    
+    expected_moment_forward = partial(sample_expected_moment, f=forward_dynamics, noise=forward_dynamics, approx=approx, mc_size=hyperparam.mc_size, reverse=False)
+    expected_moment_backward = partial(sample_expected_moment, f=backward_dynamics, noise=backward_dynamics, approx=approx, mc_size=hyperparam.mc_size, reverse=False)    
+    # expected_moment_backward = lambda k, m, u: backward_dynamics(jnp.concatenate((m, u), axis=-1))
+    # expected_moment_backward = partial(sample_expected_moment, f=forward_dynamics, noise=forward_dynamics, approx=approx, mc_size=hyperparam.mc_size, reverse=True)    
     
     info_obs = jax.vmap(obs_to_update)(y)
     update_obs = jax.vmap(approx.constrain_natural)(info_obs)
@@ -181,7 +183,7 @@ def bismooth(
     # forward
     key, forward_key = jrandom.split(key, 2)
     _, (_, _, nature_f) = scan(
-        ff, init=(forward_key, nature_f_1), xs=(update_obs[1:], u[1:])
+        ff, init=(forward_key, nature_f_1), xs=(update_obs[1:], u[:-1])  # t = 2 ...
     ) 
     nature_f = jnp.vstack((nature_f_1, nature_f))  # 1...T
 

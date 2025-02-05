@@ -1,4 +1,4 @@
-from typing import Callable, ClassVar, Type
+from typing import Callable, ClassVar, Protocol, Type
 
 import jax
 from jax import numpy as jnp, nn as jnn
@@ -9,74 +9,77 @@ import chex
 import equinox as eqx
 
 from .nn import WeightNorm, softplus_inverse, VariantBiasLinear
-from .distribution import MVN, DiagMVN
+from .distribution import MVN
 
 
-MAX_ETA = 3.
+MAX_LOGRATE = 3.
 
 
-class Likelihood(Module):
-    readout: ClassVar[Callable]
-    eloglik: ClassVar[Callable]
-    residual: ClassVar[Callable]
+class Likelihood(Protocol):
+    def eloglik(self, *args, **kwargs):
+        pass
         
 
-class PoissonLik(Likelihood):
+class PoissonLik(Module):
     readout: Module
 
-    def __init__(self, readout, norm_readout: bool = False):
-        self.readout = readout
-        if norm_readout:
-            self.readout = WeightNorm(self.readout)
+    def __init__(self, state_dim, observation_dim, *, key, norm_readout: bool = False, **kwargs):
+        n_steps = kwargs.get('n_steps', 0)
+        biases = kwargs.get('biases', "none")
 
-    def residual(self, t: Array, y: Array):
-        mean_z = jnp.zeros(self.state_dim)
-        eta = self.readout(mean_z)
-        eta = jnp.minimum(eta, MAX_ETA)
-        lam = jnp.exp(eta)
-        return lam
-
-    def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx, mc_size: int) -> Array:
-        # y = jnp.broadcast_to(y, (mc_size,) + y.shape)
-        # chex.assert_shape(y, (mc_size, None))
-        # z = DiagMVN.sample_by_moment(key, moment, mc_size)
-        # eta = jax.vmap(self.readout)(z)
-        # eta = jnp.clip(eta, max=MAX_ETA)
-        # rate = jnp.exp(eta)
-        # ll = tfp.Poisson(rate=rate).log_prob(y)
-        # return jnp.mean(ll, axis=0)
-        mean_z, cov_z = approx.moment_to_canon(moment)
-        eta = self.readout(mean_z)
-        eta = jnp.minimum(eta, MAX_ETA)
-        lam = jnp.exp(eta)
-        ll = jnp.sum(y*eta - lam)
-        # ll = tfp.Poisson(log_rate=eta).log_prob(y)
-        return ll
-
-
-class NonstationaryPoissonLik(Likelihood):
-    readout: VariantBiasLinear
-    state_dim: int = eqx.field(static=True)
-
-    def __init__(self, state_dim, observation_dim, n_steps, biases, *, key, norm_readout: bool = False) -> None:
-        self.state_dim = state_dim
-        self.readout = VariantBiasLinear(state_dim, observation_dim, n_steps, biases, key=key, norm_readout=norm_readout)
+        if n_steps > 0:
+            self.readout = VariantBiasLinear(state_dim, observation_dim, n_steps, biases, key=key, norm_readout=norm_readout)
+        else:
+            self.readout = jnn.Linear(state_dim, observation_dim, key=key)
+            if norm_readout:
+                self.readout = WeightNorm(self.readout)
     
-    def residual(self, t: Array, y: Array):
-        mean_z = jnp.zeros(self.state_dim)
-        eta = self.readout(t, mean_z)
-        eta = jnp.minimum(eta, MAX_ETA)
-        lam = jnp.exp(eta)
-        return lam
+    def set_static(self, static=True) -> None:
+        self.readout.set_static(static)
+
+    # def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx, mc_size: int) -> Array:
+    #     # y = jnp.broadcast_to(y, (mc_size,) + y.shape)
+    #     # chex.assert_shape(y, (mc_size, None))
+    #     # z = DiagMVN.sample_by_moment(key, moment, mc_size)
+    #     # eta = jax.vmap(self.readout)(z)
+    #     # eta = jnp.clip(eta, max=MAX_ETA)
+    #     # rate = jnp.exp(eta)
+    #     # ll = tfp.Poisson(rate=rate).log_prob(y)
+    #     # return jnp.mean(ll, axis=0)
+    #     mean_z, cov_z = approx.moment_to_canon(moment)
+    #     eta = self.readout(mean_z)
+    #     eta = jnp.minimum(eta, MAX_ETA)
+    #     lam = jnp.exp(eta)
+    #     ll = jnp.sum(y*eta - lam)
+    #     # ll = tfp.Poisson(log_rate=eta).log_prob(y)
+    #     return ll
 
     def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx, mc_size: int) -> Array:
         mean_z, cov_z = approx.moment_to_canon(moment)
         eta = self.readout(t, mean_z)
-        eta = jnp.minimum(eta, MAX_ETA)
+        eta = jnp.minimum(eta, MAX_LOGRATE)
         lam = jnp.exp(eta)
         ll = jnp.sum(y*eta - lam)
         # ll = tfp.Poisson(log_rate=eta).log_prob(y)
         return ll
+
+# class NonstationaryPoissonLik(Likelihood):
+#     readout: VariantBiasLinear
+
+#     def __init__(self, state_dim, observation_dim, *, key, norm_readout: bool = False, **kwargs) -> None:
+#         self.state_dim = state_dim
+#         n_steps = kwargs['n_steps']
+#         biases = kwargs.get('biases', "none") 
+#         self.readout = VariantBiasLinear(state_dim, observation_dim, n_steps, biases, key=key, norm_readout=norm_readout)
+
+#     def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx, mc_size: int) -> Array:
+#         mean_z, cov_z = approx.moment_to_canon(moment)
+#         eta = self.readout(t, mean_z)
+#         eta = jnp.minimum(eta, MAX_ETA)
+#         lam = jnp.exp(eta)
+#         ll = jnp.sum(y*eta - lam)
+#         # ll = tfp.Poisson(log_rate=eta).log_prob(y)
+#         return ll
 
 
 # class GaussainLik(Likelihood):
@@ -102,11 +105,9 @@ class NonstationaryPoissonLik(Likelihood):
 #         self.__dataclass_fields__['unconstrained_cov'].metadata = {'static': static}
 
 
-class DiagMVNLik(Likelihood):
+class DiagMVNLik(Module):
     unconstrained_cov: Array = eqx.field(static=False)
-    # _cov: Array = eqx.field(static=True)
     readout: Module
-    # dim: int
 
     def __init__(self, cov, readout, norm_readout: bool = False):
         self.unconstrained_cov = softplus_inverse(cov)

@@ -13,16 +13,15 @@ from equinox import Module, nn as enn
 from sklearn.base import TransformerMixin
 from tqdm import trange
 
-from . import vi, smoothing, distribution, spec, dynamics as dyn_mod, core
-from .dynamics import GaussianStateNoise
-from .vi import DiagMVNLik, Likelihood, NonstationaryPoissonLik, PoissonLik
+from . import vi, smoothing, distribution, spec, core
+from .dynamics import DiagNoise, Registry
+from .vi import DiagMVNLik, Likelihood, PoissonLik
 from .smoothing import Hyperparam
 from .trainer import Opt
 
 
 def make_batch_smoother(
     dynamics,
-    statenoise,
     likelihood,
     obs_to_update,
     back_encoder,
@@ -32,7 +31,6 @@ def make_batch_smoother(
         partial(
             smoothing.smooth,
             dynamics=dynamics,
-            statenoise=statenoise,
             likelihood=likelihood,
             obs_to_update=obs_to_update,
             back_encoder=back_encoder,
@@ -120,11 +118,10 @@ def loader2(
 
 
 def batch_loss(m_modules, e_modules, t, y, u, key, hyperparam) -> Scalar:
-    dynamics, statenoise, likelihood, obs_to_update, back_encoder = m_modules + e_modules
+    dynamics, likelihood, obs_to_update, back_encoder = m_modules + e_modules
 
     smooth = make_batch_smoother(
         dynamics,
-        statenoise,
         likelihood,
         obs_to_update,
         back_encoder,
@@ -138,11 +135,10 @@ def batch_loss(m_modules, e_modules, t, y, u, key, hyperparam) -> Scalar:
 
 
 def batch_loss_joint(modules, t, y, u, key, hyperparam) -> Scalar:
-    dynamics, statenoise, likelihood, obs_to_update, back_encoder = modules
+    dynamics, likelihood, obs_to_update, back_encoder = modules
 
     smooth = make_batch_smoother(
         dynamics,
-        statenoise,
         likelihood,
         obs_to_update,
         back_encoder,
@@ -200,7 +196,6 @@ def train_em(
     y: Array,
     u: Array,
     dynamics,
-    statenoise,
     likelihood: Likelihood,
     obs_to_update,
     back_encoder,
@@ -211,7 +206,7 @@ def train_em(
 ) -> tuple:
     chex.assert_rank((y, u), 3)
 
-    m_modules = (dynamics, statenoise, likelihood)
+    m_modules = (dynamics, likelihood)
     e_modules = (obs_to_update, back_encoder)
 
     optimizer_m, opt_state_mstep = make_optimizer(m_modules, opt)
@@ -269,64 +264,6 @@ def train_em(
     return m_modules + e_modules
 
 
-# def train_joint(
-#     modules,
-#     t: Array,
-#     y: Array,
-#     u: Array,
-#     hyperparam: Hyperparam,
-#     *,
-#     key: Array,
-#     opt: Opt,
-# ) -> tuple:
-#     chex.assert_rank((y, u), 3)
-
-#     # modules = (dynamics, statenoise, likelihood, obs_to_update, back_encoder)
-
-#     optimizer, opt_state_step = make_optimizer(modules, opt)
-
-#     @eqx.filter_value_and_grad
-#     def loss_func(modules, t, y, u, key) -> Scalar:
-#         return batch_loss_joint(modules, t, y, u, key, hyperparam)
-
-#     @eqx.filter_jit
-#     def joint_step(modules, t, y, u, key, opt_state):
-#         loss, grads = loss_func(modules, t, y, u, key)
-#         updates, opt_state = optimizer.update(grads, opt_state, modules)
-#         modules = eqx.apply_updates(modules, updates)
-#         return modules, opt_state, loss
-
-#     key, em_key = jrandom.split(key)
-#     old_loss = jnp.inf
-#     terminate = False
-#     max_inner_iter = opt.max_inner_iter
-#     opt.max_inner_iter = 1
-#     for i in (pbar := trange(opt.max_em_iter * max_inner_iter)):
-#         try:
-#             it_key = jrandom.fold_in(em_key, i)
-#             loss_joint, modules, opt_state_step = train_loop(
-#                 modules, t, y, u, it_key, joint_step, opt_state_step, opt
-#             )
-
-#             loss = loss_joint.item()
-
-#             chex.assert_tree_all_finite(loss)
-#             pbar.set_postfix({"loss": f"{loss:.3f}"})
-#         except KeyboardInterrupt:
-#             terminate = True
-
-#         if terminate:
-#             break
-
-#         if jnp.isclose(loss, old_loss) and i > opt.min_iter:
-#             break
-
-#         old_loss = loss
-
-#     opt.max_inner_iter = max_inner_iter  # hack
-#     return modules
-
-
 def train_pseudo(
     modules,
     t: Array,
@@ -341,8 +278,7 @@ def train_pseudo(
     chex.assert_rank((y, u), 3)
     chex.assert_equal_shape((t, y, u), dims=(0, 1))
     
-    # modules = (dynamics, statenoise, likelihood, obs_to_update, back_encoder)
-    dynamics, statenoise, likelihood, obs_to_update, back_encoder = modules
+    dynamics, likelihood, obs_to_update, back_encoder = modules
     
     if mode == "pseudo":
         batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
@@ -368,13 +304,13 @@ def train_pseudo(
         return ret
     
     def batch_fb_predict(modules, z, u):
-        forward_dynamics, statenoise, likelihood, obs_to_update, backward_dynamics = modules
+        forward_dynamics, likelihood, obs_to_update, backward_dynamics = modules
         ztp1 = eqx.filter_vmap(eqx.filter_vmap(forward_dynamics))(z, u)
         zt = eqx.filter_vmap(eqx.filter_vmap(backward_dynamics))(ztp1, u)
         return zt
 
     def batch_bf_predict(modules, z, u):
-        forward_dynamics, statenoise, likelihood, obs_to_update, backward_dynamics = modules
+        forward_dynamics, likelihood, obs_to_update, backward_dynamics = modules
         ztm1 = eqx.filter_vmap(eqx.filter_vmap(backward_dynamics))(z, u)
         zt = eqx.filter_vmap(eqx.filter_vmap(forward_dynamics))(ztm1, u)
         return zt
@@ -444,11 +380,10 @@ def train_pseudo(
 class XFADS(TransformerMixin):
     hyperparam: Hyperparam
     dynamics: Module
-    statenoise: Module
     likelihood: Likelihood
     obs_to_update: Module
     back_encoder: Module
-    opt: Opt = field(init=False)
+    opt: Opt
 
     def __init__(
         self,
@@ -461,11 +396,12 @@ class XFADS(TransformerMixin):
         state_noise,
         *,
         covariate_dim: int = 0,
-        dynamics: str = "Nonlinear",
+        forward_dynamics: str = "Nonlinear",
+        backward_dynamics: str = "Nonlinear",
         approx: str = "DiagMVN",
         observation: str = "gaussian",
         n_steps: int = 1,
-        biases: Array = None,
+        biases: Array = "none",
         norm_readout: bool = False,
         mc_size: int = 1,
         random_state: int = 0,
@@ -475,7 +411,11 @@ class XFADS(TransformerMixin):
         batch_size: int = 1,
         static_params: str = "",
         regular: float = 1.,
+        dyn_kwargs=None,
     ) -> None:
+        if dyn_kwargs is None:
+            dyn_kwargs = {}
+            
         self.spec: spec.ModelSpec = dict(
             observation_dim=observation_dim,
             state_dim=state_dim,
@@ -485,7 +425,8 @@ class XFADS(TransformerMixin):
             emission_noise=emission_noise,
             state_noise=state_noise,
             covariate_dim=covariate_dim,
-            dynamics=dynamics,
+            forward_dynamics=forward_dynamics,
+            backward_dynamics=backward_dynamics,
             approx=approx,
             observation=observation,
             n_steps=n_steps,
@@ -499,6 +440,7 @@ class XFADS(TransformerMixin):
             batch_size=batch_size,
             static_params=static_params,
             regular=regular,
+            dyn_kwargs=dyn_kwargs,
         )
 
         key = jrandom.key(random_state)
@@ -516,7 +458,7 @@ class XFADS(TransformerMixin):
 
         key, fkey, bkey, rkey, enc_key = jrandom.split(key, 5)
         
-        dynamics_class = getattr(dyn_mod, dynamics)
+        dynamics_class = Registry.get_class(forward_dynamics)
         self.dynamics = dynamics_class(
             key=fkey,
             state_dim=state_dim,
@@ -524,20 +466,14 @@ class XFADS(TransformerMixin):
             width=width,
             depth=depth,
             cov=state_noise * jnp.ones(state_dim),
+            **dyn_kwargs,
             )
-        self.statenoise = GaussianStateNoise(state_noise * jnp.ones(state_dim))
         
-        # likelihood_class = getattr(vi, observation)
-        if observation == "PoissonLik":
-            print(observation)
-            self.likelihood = PoissonLik(
-                readout=enn.Linear(state_dim, observation_dim, key=rkey),
-                norm_readout=norm_readout)
-        elif observation == "NonstationaryPoissonLik":
-            print(observation)
-            self.likelihood = NonstationaryPoissonLik(state_dim, observation_dim, n_steps, biases, key=rkey, norm_readout=norm_readout)
+        likelihood_class = getattr(vi, observation)
+        # print(likelihood_class.__name__)
+        if likelihood_class.__name__ == "PoissonLik":
+            self.likelihood = PoissonLik(state_dim, observation_dim, key=rkey, norm_readout=norm_readout, n_steps=n_steps, biases=biases)
         else:
-            print(observation)
             self.likelihood = DiagMVNLik(
                 cov=emission_noise * jnp.ones(observation_dim),
                 readout=enn.Linear(state_dim, observation_dim, key=rkey),
@@ -547,7 +483,9 @@ class XFADS(TransformerMixin):
         self.obs_to_update, self.back_encoder = approx.get_encoders(
             observation_dim, state_dim, input_dim, depth, width, enc_key
         )
+
         # NOTE: temporary
+        dynamics_class = Registry.get_class(backward_dynamics)
         self.back_encoder = dynamics_class(
             key=bkey,
             state_dim=state_dim,
@@ -555,7 +493,17 @@ class XFADS(TransformerMixin):
             width=width,
             depth=depth,
             cov=state_noise * jnp.ones(state_dim),
+            **dyn_kwargs,
             )
+        # self.back_encoder = Nonlinear(
+        #     key=bkey,
+        #     state_dim=state_dim,
+        #     input_dim=input_dim,
+        #     width=width,
+        #     depth=depth,
+        #     cov=state_noise * jnp.ones(state_dim),
+        #     # **dyn_kwargs,
+        #     )
 
         if "l" in static_params:
             self.likelihood.set_static()
@@ -564,12 +512,12 @@ class XFADS(TransformerMixin):
 
     def fit(self, X: tuple[Array, Array, Array], *, key, mode="joint") -> None:
         match mode:
-            case "em":
-                _train = train_em
-            case "joint":
-                _train = partial(train_pseudo, mode=mode)
-            case "pseudo":
-                _train = partial(train_pseudo, mode=mode)
+            # case "em":
+            #     _train = train_em
+            # case "joint":
+            #     _train = partial(train_pseudo, mode=mode)
+            # case "pseudo":
+            #     _train = partial(train_pseudo, mode=mode)
             case "bi":
                 _train = partial(train_pseudo, mode=mode)
             case _:
@@ -579,7 +527,6 @@ class XFADS(TransformerMixin):
 
         (
             self.dynamics,
-            self.statenoise,
             self.likelihood,
             self.obs_to_update,
             self.back_encoder,
@@ -605,22 +552,12 @@ class XFADS(TransformerMixin):
 
         keys = jrandom.split(key, len(X[0]))
         
-        _, moment_s, moment_p = batch_smooth(self.modules(), keys, *X)        
-        # smooth = make_batch_smoother(
-        #     self.dynamics,
-        #     self.statenoise,
-        #     self.likelihood,
-        #     self.obs_to_update,
-        #     self.back_encoder,
-        #     self.hyperparam,
-        # )
-        # return smooth(*X, key)
+        _, moment_s, moment_p = batch_smooth(self.modules(), keys, *X)
         return moment_s, moment_p
 
     def modules(self):
         return (
             self.dynamics,
-            self.statenoise,
             self.likelihood,
             self.obs_to_update,
             self.back_encoder,
@@ -629,7 +566,6 @@ class XFADS(TransformerMixin):
     def set_modules(self, modules):
         (
             self.dynamics,
-            self.statenoise,
             self.likelihood,
             self.obs_to_update,
             self.back_encoder,

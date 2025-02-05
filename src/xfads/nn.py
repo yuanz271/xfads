@@ -1,12 +1,13 @@
 from functools import partial
 import math
-from typing import Any, Callable, Literal, Optional, Sequence, TypeVar, Union
+from mimetypes import init
+from typing import Callable, Optional
 
-import numpy as np
 import jax
 from jax import nn as jnn, random as jrandom, numpy as jnp
 from jaxtyping import PRNGKeyArray, Array, Scalar
-from equinox import nn as enn, Module, field, tree_at
+import equinox as eqx
+from equinox import nn as enn, Module
 from equinox.nn import Linear
 
 
@@ -38,8 +39,8 @@ def _norm_except_axis(v: Array, norm: Callable[[Array], Scalar], axis: Optional[
 
 class WeightNorm(Module):
     layer: Linear
-    weight_name: str = field(static=True)
-    axis: Optional[int] = field(static=True)
+    weight_name: str = eqx.field(static=True)
+    axis: Optional[int] = eqx.field(static=True)
     _norm: Callable[[Array], Scalar]
 
     def __init__(
@@ -80,14 +81,14 @@ class WeightNorm(Module):
         :param x: JAX Array
         """
         weight = self.weight
-        layer = tree_at(
+        layer = eqx.ree_at(
             lambda layer: getattr(layer, self.weight_name), self.layer, weight
         )
         return layer(x)
 
 
 class VariantBiasLinear(Module):
-    biases: Array = field(static=False)
+    biases: Array = eqx.field(static=False)
     linear: Module
 
     def __init__(self, state_dim, observation_dim, n_biases, biases, *, key, norm_readout: bool = False):
@@ -106,24 +107,26 @@ class VariantBiasLinear(Module):
     def __call__(self, idx, x):
         x = self.linear(x)
         return x + self.biases[idx]
-        # return jax.lax.switch(idx, self.add_bias, x)
+    
+    def set_static(self, static=True) -> None:
+        self.__dataclass_fields__['biases'].metadata = {'static': static}
 
 
 def gauss_rbf(x, c, s):
-    return jnp.exp(-jnp.sum(jnp.square((x - c)) * s))
+    return jnp.exp(-jnp.sum(jnp.square((x - c) * s)))
 
 
 class RBFN(Module):
-    centers: Array
-    scale: Scalar
+    centers: Array = eqx.field(static=True)
+    scale: Array 
     readout: Module
 
     def __init__(self, input_size, output_size, network_size, *, key, normalized: bool = False):
         key, ckey=jrandom.split(key)
         self.centers = jrandom.uniform(ckey, shape=(network_size, input_size), minval=-1, maxval=1)
-        self.scale = 0.1
+        self.scale = jnp.ones(input_size)
         self.readout = Linear(network_size, output_size, key=key)
 
     def __call__(self, x):
-        kernels = jax.vmap(gauss_rbf, in_axes=(None, 0, None))(x, self.centers, self.scale)
+        kernels = jax.vmap(gauss_rbf, in_axes=(None, 0, None))(x, self.centers, jnn.softplus(self.scale))
         return self.readout(kernels)

@@ -1,5 +1,5 @@
-from dataclasses import field
 from functools import partial
+from typing import Type
 
 import jax
 from jax import numpy as jnp, nn as jnn, random as jrandom
@@ -7,6 +7,7 @@ from jaxtyping import Array, PRNGKeyArray
 import equinox as eqx
 from equinox import Module, nn as enn
 
+from .helper import SingletonMeta
 from .nn import make_mlp, softplus_inverse, RBFN
 from .distribution import MVN
 
@@ -16,8 +17,28 @@ from .distribution import MVN
 # Module as container of trainable arrays
 # Never nest modules
 
+class Registry(metaclass=SingletonMeta):
+    _registry: dict = {}  # class variable
 
-class GaussianStateNoise(Module):
+    @classmethod
+    def register(cls, name=None):
+
+        def decorate(klass):
+            nonlocal name
+            if name is None:
+                name = klass.__name__
+            cls._registry[name] = klass
+            return klass
+        
+        return decorate
+
+    @classmethod
+    def get_class(cls, name):
+        klass = cls._registry[name]
+        return klass
+
+
+class DiagNoise(Module):
     unconstrained_cov: Array = eqx.field(static=False)
     
     def __init__(self, cov):
@@ -30,7 +51,8 @@ class GaussianStateNoise(Module):
         self.__dataclass_fields__['unconstrained_cov'].metadata = {'static': static}
 
 
-class Diffusion(GaussianStateNoise):
+@Registry.register()
+class Diffusion(DiagNoise):
     def __init__(
         self,
         state_dim: int,
@@ -47,8 +69,9 @@ class Diffusion(GaussianStateNoise):
         return z
 
 
-class Nonlinear(GaussianStateNoise):
-    forward: Module = field(init=False)
+@Registry.register()
+class Nonlinear(DiagNoise):
+    forward: Module
 
     def __init__(
         self,
@@ -65,14 +88,15 @@ class Nonlinear(GaussianStateNoise):
             state_dim + input_dim, state_dim, width, depth, key=key
         )
 
-    def __call__(self, z: Array, u: Array, reverse: bool = False) -> Array:
+    def __call__(self, z: Array, u: Array) -> Array:
         x = jnp.concatenate((z, u), axis=-1)
         return self.forward(x)
     
 
-class RBFNLinear(GaussianStateNoise):
-    forward: Module = field(init=False)
-    drive: Module = field(init=False)
+@Registry.register()
+class RBFNLinear(DiagNoise):
+    forward: Module 
+    drive: Module
     
     def __init__(
         self,
@@ -93,40 +117,15 @@ class RBFNLinear(GaussianStateNoise):
         self.drive = enn.Linear(input_dim, state_dim, use_bias=False, key=dkey)
 
 
-    def __call__(self, z: Array, u: Array, reverse: bool = False) -> Array:
+    def __call__(self, z: Array, u: Array) -> Array:
         return z + self.forward(z) + self.drive(u)
 
 
-class LinearRecurrent(GaussianStateNoise):
-    recurrent: Module = field(init=False)
-    drive: Module = field(init=False)
-
-    def __init__(
-        self,
-        state_dim: int,
-        input_dim: int,
-        width: int,
-        depth: int,
-        cov,
-        *,
-        key: PRNGKeyArray,
-    ):
-        super().__init__(cov)
-        recurrent_key, input_key = jrandom.split(key)
-        self.drive = make_mlp(
-            state_dim + input_dim, state_dim, width, depth, key=input_key
-        )
-        self.recurrent = enn.Linear(state_dim, state_dim, use_bias=False, key=recurrent_key)
-
-    def __call__(self, z: Array, u: Array) -> Array:
-        x = jnp.concatenate((z, u), axis=-1)
-        return self.recurrent(z) + self.drive(x)
-    
-
-class LocallyLinearInput(GaussianStateNoise):
-    B_shape: tuple[int, int] = eqx.field(static=True, init=False)
-    recurrent: Module = eqx.field(init=False)
-    drive: Module = eqx.field(init=False)
+@Registry.register()
+class LocallyLinearInput(DiagNoise):
+    B_shape: tuple[int, int] = eqx.field(static=True)
+    recurrent: Module 
+    drive: Module 
 
     def __init__(
         self,
@@ -152,9 +151,10 @@ class LocallyLinearInput(GaussianStateNoise):
         return self.recurrent(z) + B @ u
     
 
-class LinearInput(GaussianStateNoise):
-    recurrent: Module = field(init=False)
-    drive: Module = field(init=False)
+@Registry.register()
+class LinearInput(DiagNoise):
+    recurrent: Module 
+    drive: Module 
 
     def __init__(
         self,
@@ -175,18 +175,13 @@ class LinearInput(GaussianStateNoise):
 
     def __call__(self, z: Array, u: Array) -> Array:
         return self.recurrent(z) + self.drive(u)
-    
-
-def build_dynamics(name: str, *, key, **kwargs) -> Module:
-    dynamics_class = globals()[name]
-    return dynamics_class(key=key, **kwargs)
 
 
 def predict_moment(
-    z: Array, u: Array, f, noise: GaussianStateNoise, approx: MVN, reverse: bool
+    z: Array, u: Array, f, noise: DiagNoise, approx: Type[MVN]
 ) -> Array:
     """mu[t](z[t-1])"""
-    ztp1 = f(z, u, reverse)
+    ztp1 = f(z, u)
     M2 = approx.noise_moment(noise.cov())
     # match approx():
     #     case DiagMVN():
@@ -206,17 +201,16 @@ def sample_expected_moment(
     moment: Array,
     u: Array,
     f,
-    noise: GaussianStateNoise,
-    approx: MVN,
+    noise: DiagNoise,
+    approx: Type[MVN],
     mc_size: int,
-    reverse: bool = False,
 ) -> Array:
     """E[mu[t](z[t-1])]"""
     z = approx.sample_by_moment(key, moment, mc_size)
     u_shape = (mc_size,) + u.shape
     u = jnp.broadcast_to(u, shape=u_shape)
     vf = jax.vmap(
-        partial(predict_moment, f=f, noise=noise, approx=approx, reverse=reverse), in_axes=(0, 0)
+        partial(predict_moment, f=f, noise=noise, approx=approx), in_axes=(0, 0)
     )
     moment = jnp.mean(vf(z, u), axis=0)
     return moment

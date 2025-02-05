@@ -114,11 +114,6 @@ class DiagMVNLik(Likelihood):
         if norm_readout:
             self.readout = WeightNorm(self.readout)
 
-    def residual(self, t: Array, y: Array):
-        mean_z = jnp.zeros(self.unconstrained_cov.shape[0])
-        eta = self.readout(mean_z)
-        return y - eta
-
     def cov(self):
         return jnn.softplus(self.unconstrained_cov)
 

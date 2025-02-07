@@ -81,32 +81,57 @@ class WeightNorm(Module):
         :param x: JAX Array
         """
         weight = self.weight
-        layer = eqx.ree_at(
+        layer = eqx.tree_at(
             lambda layer: getattr(layer, self.weight_name), self.layer, weight
         )
         return layer(x)
 
 
+class StationaryLinear(Module):
+    layer: Module
+    
+    def __init__(self, state_dim, observation_dim, *, key, norm_readout: bool = False):
+        self.layer = Linear(state_dim, observation_dim, key=key, use_bias=True)
+        
+        if norm_readout:
+            self.layer = WeightNorm(self.layer)        
+
+    def __call__(self, idx, x):
+        return self.layer(x)
+    
+    @property
+    def weight(self):
+        return self.layer.weight
+
+
 class VariantBiasLinear(Module):
     biases: Array = eqx.field(static=False)
-    linear: Module
+    layer: Module
 
     def __init__(self, state_dim, observation_dim, n_biases, biases, *, key, norm_readout: bool = False):
         wkey, bkey = jrandom.split(key, 2)
-
-        self.linear = Linear(state_dim, observation_dim, key=wkey, use_bias=False)
-        if norm_readout:
-            self.linear = WeightNorm(self.linear)
         
+        # if n_biases == 0:
+        #     self.linear = Linear(state_dim, observation_dim, key=wkey, use_bias=True)
+        #     self.biases = None
+        # else:
+        self.layer = Linear(state_dim, observation_dim, key=wkey, use_bias=False)
         if biases == "none":
             lim = 1 / math.sqrt(state_dim)
-            self.biases = jrandom.uniform(bkey, (n_biases, observation_dim), dtype=self.linear.weight.dtype, minval=-lim, maxval=lim)
+            self.biases = jrandom.uniform(bkey, (n_biases, observation_dim), dtype=self.layer.weight.dtype, minval=-lim, maxval=lim)
         else:
             self.biases = biases
+        
+        if norm_readout:
+            self.layer = WeightNorm(self.layer)        
     
     def __call__(self, idx, x):
-        x = self.linear(x)
+        x = self.layer(x)
         return x + self.biases[idx]
+    
+    @property
+    def weight(self):
+        return self.layer.weight
     
     def set_static(self, static=True) -> None:
         self.__dataclass_fields__['biases'].metadata = {'static': static}

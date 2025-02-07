@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 import jax
 from jax import numpy as jnp, random as jrandom
-from jax._src.random import KeyArray
 import optax
 import equinox as eqx
 from tqdm import trange
@@ -17,6 +16,7 @@ class Opt:
     clip_norm: float = 5.0
     batch_size: int = 1
     weight_decay: float = 1e-3
+    seed: int = 0
     
 
 def make_optimizer(modules, opt: Opt):

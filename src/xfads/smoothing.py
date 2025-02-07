@@ -23,7 +23,8 @@ class Hyperparam:
     observation_dim: int
     covariate_dim: int
     mc_size: int
-    regular: float = 0.01
+    fb_penalty: float = 0.01
+    noise_penalty: float = 1e2
 
 
 def smooth(
@@ -32,7 +33,6 @@ def smooth(
     u: Array,
     key: PRNGKeyArray,
     dynamics: Module,
-    statenoise: Module,
     likelihood: Likelihood,
     obs_to_update: Module,
     back_encoder: Module,
@@ -51,7 +51,7 @@ def smooth(
     nature_f_1 = nature_prior_1 + update_obs[0]
     moment_f_1 = approx.natural_to_moment(nature_f_1)
 
-    expected_moment = partial(sample_expected_moment, forward=dynamics, noise=statenoise, approx=approx, mc_size=hyperparam.mc_size)
+    expected_moment = partial(sample_expected_moment, forward=dynamics, noise=dynamics, approx=approx, mc_size=hyperparam.mc_size)
 
     def forward(carry, obs):
         key, nature_f_tm1 = carry

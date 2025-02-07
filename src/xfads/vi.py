@@ -1,4 +1,4 @@
-from typing import Callable, ClassVar, Protocol, Type
+from typing import Callable, Protocol, Type
 
 import jax
 from jax import numpy as jnp, nn as jnn
@@ -8,11 +8,11 @@ import tensorflow_probability.substrates.jax.distributions as tfp
 import chex
 import equinox as eqx
 
-from .nn import WeightNorm, softplus_inverse, VariantBiasLinear
+from .nn import WeightNorm, softplus_inverse, VariantBiasLinear, StationaryLinear
 from .distribution import MVN
 
 
-MAX_LOGRATE = 3.
+MAX_LOGRATE = 15.
 
 
 class Likelihood(Protocol):
@@ -30,12 +30,11 @@ class PoissonLik(Module):
         if n_steps > 0:
             self.readout = VariantBiasLinear(state_dim, observation_dim, n_steps, biases, key=key, norm_readout=norm_readout)
         else:
-            self.readout = jnn.Linear(state_dim, observation_dim, key=key)
-            if norm_readout:
-                self.readout = WeightNorm(self.readout)
+            self.readout = StationaryLinear(state_dim, observation_dim, key=key, norm_readout=norm_readout)
     
     def set_static(self, static=True) -> None:
-        self.readout.set_static(static)
+        if isinstance(self.readout, VariantBiasLinear):
+            self.readout.set_static(static)
 
     # def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx, mc_size: int) -> Array:
     #     # y = jnp.broadcast_to(y, (mc_size,) + y.shape)

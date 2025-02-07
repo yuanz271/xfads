@@ -1,4 +1,3 @@
-from dataclasses import dataclass, field
 from functools import partial
 from typing import Callable, Optional, Self
 import json
@@ -9,40 +8,38 @@ from jax import numpy as jnp, random as jrandom
 import optax
 import chex
 import equinox as eqx
-from equinox import Module, nn as enn
-from sklearn.base import TransformerMixin
 from tqdm import trange
 
-from . import vi, smoothing, distribution, spec, core
-from .dynamics import DiagNoise, Registry
+from . import vi, distribution, spec, core
+from .dynamics import Registry
 from .vi import DiagMVNLik, Likelihood, PoissonLik
 from .smoothing import Hyperparam
 from .trainer import Opt
 
 
-def make_batch_smoother(
-    dynamics,
-    likelihood,
-    obs_to_update,
-    back_encoder,
-    hyperparam,
-) -> Callable[[Array, Array, Array, Array], tuple[Array, Array]]:
-    smooth = jax.vmap(
-        partial(
-            smoothing.smooth,
-            dynamics=dynamics,
-            likelihood=likelihood,
-            obs_to_update=obs_to_update,
-            back_encoder=back_encoder,
-            hyperparam=hyperparam,
-        )
-    )
+# def make_batch_smoother(
+#     dynamics,
+#     likelihood,
+#     obs_to_update,
+#     back_encoder,
+#     hyperparam,
+# ) -> Callable[[Array, Array, Array, Array], tuple[Array, Array]]:
+#     smooth = jax.vmap(
+#         partial(
+#             smoothing.smooth,
+#             dynamics=dynamics,
+#             likelihood=likelihood,
+#             obs_to_update=obs_to_update,
+#             back_encoder=back_encoder,
+#             hyperparam=hyperparam,
+#         )
+#     )
 
-    @eqx.filter_jit
-    def _smooth(ts, ys, us, key) -> tuple[Array, Array]:
-        return smooth(ts, ys, us, jrandom.split(key, jnp.size(ys, 0)))
+#     @eqx.filter_jit
+#     def _smooth(ts, ys, us, key) -> tuple[Array, Array]:
+#         return smooth(ts, ys, us, jrandom.split(key, jnp.size(ys, 0)))
 
-    return _smooth
+#     return _smooth
 
 
 def make_batch_elbo(
@@ -70,9 +67,16 @@ def make_batch_elbo(
 
 
 def make_optimizer(module, opt: Opt):
+    # optimizer = optax.chain(
+    #     optax.clip_by_global_norm(opt.clip_norm),
+    #     optax.adamw(opt.learning_rate),
+    # )
     optimizer = optax.chain(
         optax.clip_by_global_norm(opt.clip_norm),
-        optax.adamw(opt.learning_rate),
+        optax.add_noise(1.0, 0.9, opt.seed),
+        optax.scale_by_adam(),
+        optax.add_decayed_weights(1e-4),
+        optax.scale_by_learning_rate(opt.learning_rate),
     )
     opt_state = optimizer.init(eqx.filter(module, eqx.is_inexact_array))
 
@@ -117,155 +121,155 @@ def loader2(
         yield key_k, *ret
 
 
-def batch_loss(m_modules, e_modules, t, y, u, key, hyperparam) -> Scalar:
-    dynamics, likelihood, obs_to_update, back_encoder = m_modules + e_modules
+# def batch_loss(m_modules, e_modules, t, y, u, key, hyperparam) -> Scalar:
+#     dynamics, likelihood, obs_to_update, back_encoder = m_modules + e_modules
 
-    smooth = make_batch_smoother(
-        dynamics,
-        likelihood,
-        obs_to_update,
-        back_encoder,
-        hyperparam,
-    )
-    elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
+#     smooth = make_batch_smoother(
+#         dynamics,
+#         likelihood,
+#         obs_to_update,
+#         back_encoder,
+#         hyperparam,
+#     )
+#     elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
 
-    skey, lkey = jrandom.split(key)
-    moment_s, moment_p = smooth(t, y, u, skey)
-    return -elbo(lkey, t, moment_s, moment_p, y)
-
-
-def batch_loss_joint(modules, t, y, u, key, hyperparam) -> Scalar:
-    dynamics, likelihood, obs_to_update, back_encoder = modules
-
-    smooth = make_batch_smoother(
-        dynamics,
-        likelihood,
-        obs_to_update,
-        back_encoder,
-        hyperparam,
-    )
-    elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
-
-    skey, lkey = jrandom.split(key)
-    moment_s, moment_p = smooth(t, y, u, skey)
-    return -elbo(lkey, t, moment_s, moment_p, y)
+#     skey, lkey = jrandom.split(key)
+#     moment_s, moment_p = smooth(t, y, u, skey)
+#     return -elbo(lkey, t, moment_s, moment_p, y)
 
 
-def train_loop(modules, t, y, u, key, step, opt_state, opt):
-    # old_loss = jnp.inf
-    for i in range(opt.max_inner_iter):
-        key_i = jrandom.fold_in(key, i)
-        total_loss = 0.0
-        n_minibatch = 0
-        for tm, ym, um, minibatch_key in loader(t, y, u, opt.batch_size, key=key_i):
-            modules, opt_state, loss = step(modules, tm, ym, um, minibatch_key, opt_state)
-            # chex.assert_tree_all_finite(loss)
-            total_loss += loss
-            n_minibatch += 1
-        total_loss = total_loss / max(n_minibatch, 1)
+# def batch_loss_joint(modules, t, y, u, key, hyperparam) -> Scalar:
+#     dynamics, likelihood, obs_to_update, back_encoder = modules
 
-        # if jnp.isclose(total_loss, old_loss):
-        #     break
+#     smooth = make_batch_smoother(
+#         dynamics,
+#         likelihood,
+#         obs_to_update,
+#         back_encoder,
+#         hyperparam,
+#     )
+#     elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
 
-        # old_loss = total_loss
-    return total_loss, modules, opt_state
+#     skey, lkey = jrandom.split(key)
+#     moment_s, moment_p = smooth(t, y, u, skey)
+#     return -elbo(lkey, t, moment_s, moment_p, y)
 
 
-def train_loop2(modules, key, step, opt_state, opt, *args):
-    # old_loss = jnp.inf
-    for i in range(opt.max_inner_iter):
-        key_i = jrandom.fold_in(key, i)
-        total_loss = 0.0
-        n_minibatch = 0
-        for tm, ym, um, minibatch_key in loader(*args, opt.batch_size, key=key_i):
-            modules, opt_state, loss = step(modules, tm, ym, um, minibatch_key, opt_state)
-            # chex.assert_tree_all_finite(loss)
-            total_loss += loss
-            n_minibatch += 1
-        total_loss = total_loss / max(n_minibatch, 1)
+# def train_loop(modules, t, y, u, key, step, opt_state, opt):
+#     # old_loss = jnp.inf
+#     for i in range(opt.max_inner_iter):
+#         key_i = jrandom.fold_in(key, i)
+#         total_loss = 0.0
+#         n_minibatch = 0
+#         for tm, ym, um, minibatch_key in loader(t, y, u, opt.batch_size, key=key_i):
+#             modules, opt_state, loss = step(modules, tm, ym, um, minibatch_key, opt_state)
+#             # chex.assert_tree_all_finite(loss)
+#             total_loss += loss
+#             n_minibatch += 1
+#         total_loss = total_loss / max(n_minibatch, 1)
 
-        # if jnp.isclose(total_loss, old_loss):
-        #     break
+#         # if jnp.isclose(total_loss, old_loss):
+#         #     break
 
-        # old_loss = total_loss
-    return total_loss, modules, opt_state
+#         # old_loss = total_loss
+#     return total_loss, modules, opt_state
 
 
-def train_em(
-    t: Array,
-    y: Array,
-    u: Array,
-    dynamics,
-    likelihood: Likelihood,
-    obs_to_update,
-    back_encoder,
-    hyperparam: Hyperparam,
-    *,
-    key: Array,
-    opt: Opt,
-) -> tuple:
-    chex.assert_rank((y, u), 3)
+# def train_loop2(modules, key, step, opt_state, opt, *args):
+#     # old_loss = jnp.inf
+#     for i in range(opt.max_inner_iter):
+#         key_i = jrandom.fold_in(key, i)
+#         total_loss = 0.0
+#         n_minibatch = 0
+#         for tm, ym, um, minibatch_key in loader(*args, opt.batch_size, key=key_i):
+#             modules, opt_state, loss = step(modules, tm, ym, um, minibatch_key, opt_state)
+#             # chex.assert_tree_all_finite(loss)
+#             total_loss += loss
+#             n_minibatch += 1
+#         total_loss = total_loss / max(n_minibatch, 1)
 
-    m_modules = (dynamics, likelihood)
-    e_modules = (obs_to_update, back_encoder)
+#         # if jnp.isclose(total_loss, old_loss):
+#         #     break
 
-    optimizer_m, opt_state_mstep = make_optimizer(m_modules, opt)
-    optimizer_e, opt_state_estep = make_optimizer(e_modules, opt)
+#         # old_loss = total_loss
+#     return total_loss, modules, opt_state
 
-    @eqx.filter_value_and_grad
-    def eloss(e_modules, t, y, u, key) -> Scalar:
-        return batch_loss(m_modules, e_modules, t, y, u, key, hyperparam)
 
-    @eqx.filter_value_and_grad
-    def mloss(m_modules, t, y, u, key) -> Scalar:
-        return batch_loss(m_modules, e_modules, t, y, u, key, hyperparam)
+# def train_em(
+#     t: Array,
+#     y: Array,
+#     u: Array,
+#     dynamics,
+#     likelihood: Likelihood,
+#     obs_to_update,
+#     back_encoder,
+#     hyperparam: Hyperparam,
+#     *,
+#     key: Array,
+#     opt: Opt,
+# ) -> tuple:
+#     chex.assert_rank((y, u), 3)
 
-    @eqx.filter_jit
-    def estep(module, t, y, u, key, opt_state):
-        loss, grads = eloss(module, t, y, u, key)
-        updates, opt_state = optimizer_e.update(grads, opt_state, module)
-        module = eqx.apply_updates(module, updates)
-        return module, opt_state, loss
+#     m_modules = (dynamics, likelihood)
+#     e_modules = (obs_to_update, back_encoder)
 
-    @eqx.filter_jit
-    def mstep(module, t, y, u, key, opt_state):
-        loss, grads = mloss(module, t, y, u, key)
-        updates, opt_state = optimizer_m.update(grads, opt_state, module)
-        module = eqx.apply_updates(module, updates)
-        return module, opt_state, loss
+#     optimizer_m, opt_state_mstep = make_optimizer(m_modules, opt)
+#     optimizer_e, opt_state_estep = make_optimizer(e_modules, opt)
 
-    key, em_key = jrandom.split(key)
-    old_loss = jnp.inf
-    terminate = False
-    for i in (pbar := trange(opt.max_em_iter)):
-        try:
-            ekey, mkey = jrandom.split(jrandom.fold_in(em_key, i))
-            loss_e, e_modules, opt_state_estep = train_loop(
-                e_modules, t, y, u, ekey, estep, opt_state_estep, opt
-            )
-            loss_m, m_modules, opt_state_mstep = train_loop(
-                m_modules, t, y, u, mkey, mstep, opt_state_mstep, opt
-            )
-            loss = 0.5 * (loss_e.item() + loss_m.item())
+#     @eqx.filter_value_and_grad
+#     def eloss(e_modules, t, y, u, key) -> Scalar:
+#         return batch_loss(m_modules, e_modules, t, y, u, key, hyperparam)
 
-            chex.assert_tree_all_finite(loss)
-            pbar.set_postfix({"loss": f"{loss:.3f}"})
-        except KeyboardInterrupt:
-            terminate = True
+#     @eqx.filter_value_and_grad
+#     def mloss(m_modules, t, y, u, key) -> Scalar:
+#         return batch_loss(m_modules, e_modules, t, y, u, key, hyperparam)
 
-        if terminate:
-            break
+#     @eqx.filter_jit
+#     def estep(module, t, y, u, key, opt_state):
+#         loss, grads = eloss(module, t, y, u, key)
+#         updates, opt_state = optimizer_e.update(grads, opt_state, module)
+#         module = eqx.apply_updates(module, updates)
+#         return module, opt_state, loss
 
-        if jnp.isclose(loss, old_loss) and i > opt.min_iter:
-            break
+#     @eqx.filter_jit
+#     def mstep(module, t, y, u, key, opt_state):
+#         loss, grads = mloss(module, t, y, u, key)
+#         updates, opt_state = optimizer_m.update(grads, opt_state, module)
+#         module = eqx.apply_updates(module, updates)
+#         return module, opt_state, loss
 
-        old_loss = loss
+#     key, em_key = jrandom.split(key)
+#     old_loss = jnp.inf
+#     terminate = False
+#     for i in (pbar := trange(opt.max_em_iter)):
+#         try:
+#             ekey, mkey = jrandom.split(jrandom.fold_in(em_key, i))
+#             loss_e, e_modules, opt_state_estep = train_loop(
+#                 e_modules, t, y, u, ekey, estep, opt_state_estep, opt
+#             )
+#             loss_m, m_modules, opt_state_mstep = train_loop(
+#                 m_modules, t, y, u, mkey, mstep, opt_state_mstep, opt
+#             )
+#             loss = 0.5 * (loss_e.item() + loss_m.item())
 
-    return m_modules + e_modules
+#             chex.assert_tree_all_finite(loss)
+#             pbar.set_postfix({"loss": f"{loss:.3f}"})
+#         except KeyboardInterrupt:
+#             terminate = True
+
+#         if terminate:
+#             break
+
+#         if jnp.isclose(loss, old_loss) and i > opt.min_iter:
+#             break
+
+#         old_loss = loss
+
+#     return m_modules + e_modules
 
 
 def train_pseudo(
-    modules,
+    model,
     t: Array,
     y: Array,
     u: Array,
@@ -278,7 +282,7 @@ def train_pseudo(
     chex.assert_rank((y, u), 3)
     chex.assert_equal_shape((t, y, u), dims=(0, 1))
     
-    dynamics, likelihood, obs_to_update, back_encoder = modules
+    # dynamics, likelihood, obs_to_update, back_encoder = model.forward, model.likehood
     
     if mode == "pseudo":
         batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
@@ -287,7 +291,7 @@ def train_pseudo(
     else:
         batch_smooth = jax.vmap(partial(core.smooth, hyperparam=hyperparam), in_axes=(None, 0, 0, 0, 0))
 
-    batch_elbo = make_batch_elbo(likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
+    batch_elbo = make_batch_elbo(model.likelihood.eloglik, hyperparam.approx, hyperparam.mc_size)
 
     def batch_sample(key, moment: Float[Array, "batch time moment"], approx) -> Float[Array, "batch time variable"]:
         def seq_sample(key, moment: Float[Array, "time moment"]):
@@ -303,48 +307,46 @@ def train_pseudo(
         
         return ret
     
-    def batch_fb_predict(modules, z, u):
-        forward_dynamics, likelihood, obs_to_update, backward_dynamics = modules
-        ztp1 = eqx.filter_vmap(eqx.filter_vmap(forward_dynamics))(z, u)
-        zt = eqx.filter_vmap(eqx.filter_vmap(backward_dynamics))(ztp1, u)
+    def batch_fb_predict(model, z, u):
+        ztp1 = eqx.filter_vmap(eqx.filter_vmap(model.forward))(z, u)
+        zt = eqx.filter_vmap(eqx.filter_vmap(model.backward))(ztp1, u)
         return zt
 
-    def batch_bf_predict(modules, z, u):
-        forward_dynamics, likelihood, obs_to_update, backward_dynamics = modules
-        ztm1 = eqx.filter_vmap(eqx.filter_vmap(backward_dynamics))(z, u)
-        zt = eqx.filter_vmap(eqx.filter_vmap(forward_dynamics))(ztm1, u)
+    def batch_bf_predict(model, z, u):
+        ztm1 = eqx.filter_vmap(eqx.filter_vmap(model.backward))(z, u)
+        zt = eqx.filter_vmap(eqx.filter_vmap(model.forward))(ztm1, u)
         return zt
 
-    def batch_loss(modules, key, tb, yb, ub) -> Scalar:        
+    def batch_loss(model, key, tb, yb, ub) -> Scalar:        
         key, skey, lkey = jrandom.split(key, 3)
         fkeys = jrandom.split(skey, len(tb))
         
         chex.assert_equal_shape((fkeys, tb, yb, ub), dims=0)
         chex.assert_equal_shape((tb, yb, ub), dims=(0, 1))
 
-        _, moment_s, moment_p = batch_smooth(modules, fkeys, tb, yb, ub)
+        _, moment_s, moment_p = batch_smooth(model, fkeys, tb, yb, ub)
         
         zb = batch_sample(key, moment_s, hyperparam.approx)
-        zb_hat_fb = batch_fb_predict(modules, zb, ub)
-        zb_hat_bf = batch_bf_predict(modules, zb, ub)
-        penalty = jnp.mean((zb - zb_hat_fb) ** 2) + jnp.mean((zb - zb_hat_bf) ** 2)
+        zb_hat_fb = batch_fb_predict(model, zb, ub)
+        zb_hat_bf = batch_bf_predict(model, zb, ub)
+        fb_loss = jnp.mean((zb - zb_hat_fb) ** 2) + jnp.mean((zb - zb_hat_bf) ** 2)
         
-        return -batch_elbo(lkey, tb, moment_s, moment_p, yb) + hyperparam.regular * penalty
+        return -batch_elbo(lkey, tb, moment_s, moment_p, yb) + hyperparam.fb_penalty * fb_loss + hyperparam.noise_penalty * (model.forward.loss() + model.backward.loss())
 
-    def _train(modules, key, batch_loss_func, *args):
+    def _train(model, key, batch_loss_func, *args):
 
-        optimizer, opt_state = make_optimizer(modules, opt)
+        optimizer, opt_state = make_optimizer(model, opt)
 
         @eqx.filter_value_and_grad
-        def loss_func(modules, key, *args) -> Scalar:
-            return batch_loss_func(modules, key, *args)
+        def loss_func(model, key, *args) -> Scalar:
+            return batch_loss_func(model, key, *args)
 
         @eqx.filter_jit
-        def step(modules, key, opt_state, *args):
-            loss, grads = loss_func(modules, key, *args)
-            updates, opt_state = optimizer.update(grads, opt_state, modules)
-            modules = eqx.apply_updates(modules, updates)
-            return modules, opt_state, loss
+        def step(model, key, opt_state, *args):
+            loss, grads = loss_func(model, key, *args)
+            updates, opt_state = optimizer.update(grads, opt_state, model)
+            model = eqx.apply_updates(model, updates)
+            return model, opt_state, loss
 
         old_loss = jnp.inf
         terminate = False
@@ -353,12 +355,12 @@ def train_pseudo(
                 try:
                     key_i = jrandom.fold_in(key, i)
                     for minibatch_key, *argm in loader2(*args, batch_size=opt.batch_size, key=key_i):
-                        modules, opt_state, loss = step(modules, minibatch_key, opt_state, *argm)
+                        model, opt_state, loss = step(model, minibatch_key, opt_state, *argm)
                 except KeyboardInterrupt:
                     terminate = True
                 
                 key, subkey = jrandom.split(key, 2)
-                loss = batch_loss_func(modules, subkey, *args)
+                loss = batch_loss_func(model, subkey, *args)
                 pbar.set_postfix({'loss': f"{loss:.3f}"})
 
                 if terminate:
@@ -369,21 +371,21 @@ def train_pseudo(
 
                 old_loss = loss
 
-            return modules, loss
+            return model, loss
 
-    modules, loss = _train(modules, key, batch_loss, t, y, u)
+    model, loss = _train(model, key, batch_loss, t, y, u)
 
-    return modules
+    return model
 
 
-@dataclass
-class XFADS(TransformerMixin):
-    hyperparam: Hyperparam
-    dynamics: Module
-    likelihood: Likelihood
-    obs_to_update: Module
-    back_encoder: Module
-    opt: Opt
+class XFADS(eqx.Module):
+    spec: dict = eqx.field(static=True)
+    hyperparam: Hyperparam = eqx.field(static=True)
+    opt: Opt = eqx.field(static=True)
+    forward: eqx.Module
+    backward: eqx.Module
+    likelihood: eqx.Module
+    obs_encoder: eqx.Module
 
     def __init__(
         self,
@@ -410,7 +412,8 @@ class XFADS(TransformerMixin):
         max_inner_iter: int = 1,
         batch_size: int = 1,
         static_params: str = "",
-        regular: float = 1.,
+        fb_penalty: float = 0.,
+        noise_penalty: float = 0., 
         dyn_kwargs=None,
     ) -> None:
         if dyn_kwargs is None:
@@ -439,7 +442,8 @@ class XFADS(TransformerMixin):
             max_inner_iter=max_inner_iter,
             batch_size=batch_size,
             static_params=static_params,
-            regular=regular,
+            fb_penalty=fb_penalty,
+            noise_penalty=noise_penalty,
             dyn_kwargs=dyn_kwargs,
         )
 
@@ -447,7 +451,7 @@ class XFADS(TransformerMixin):
         approx = getattr(distribution, approx, distribution.DiagMVN)
 
         self.hyperparam = Hyperparam(
-            approx, state_dim, input_dim, observation_dim, covariate_dim, mc_size, regular
+            approx, state_dim, input_dim, observation_dim, covariate_dim, mc_size, fb_penalty, noise_penalty
         )
         self.opt = Opt(
             min_iter=min_iter,
@@ -459,7 +463,7 @@ class XFADS(TransformerMixin):
         key, fkey, bkey, rkey, enc_key = jrandom.split(key, 5)
         
         dynamics_class = Registry.get_class(forward_dynamics)
-        self.dynamics = dynamics_class(
+        self.forward = dynamics_class(
             key=fkey,
             state_dim=state_dim,
             input_dim=input_dim,
@@ -476,17 +480,15 @@ class XFADS(TransformerMixin):
         else:
             self.likelihood = DiagMVNLik(
                 cov=emission_noise * jnp.ones(observation_dim),
-                readout=enn.Linear(state_dim, observation_dim, key=rkey),
+                readout=eqx.nn.Linear(state_dim, observation_dim, key=rkey),
                 norm_readout=norm_readout,
             )
 
-        self.obs_to_update, self.back_encoder = approx.get_encoders(
-            observation_dim, state_dim, input_dim, depth, width, enc_key
-        )
+        self.obs_encoder, _ = approx.get_encoders(observation_dim, state_dim, input_dim, depth, width, enc_key)
 
         # NOTE: temporary
         dynamics_class = Registry.get_class(backward_dynamics)
-        self.back_encoder = dynamics_class(
+        self.backward = dynamics_class(
             key=bkey,
             state_dim=state_dim,
             input_dim=input_dim,
@@ -508,7 +510,7 @@ class XFADS(TransformerMixin):
         if "l" in static_params:
             self.likelihood.set_static()
         if "s" in static_params:
-            self.dynamics.set_static()
+            self.forward.set_static()
 
     def fit(self, X: tuple[Array, Array, Array], *, key, mode="joint") -> None:
         match mode:
@@ -525,13 +527,8 @@ class XFADS(TransformerMixin):
 
         t, y, u = X
 
-        (
-            self.dynamics,
-            self.likelihood,
-            self.obs_to_update,
-            self.back_encoder,
-        ) = _train(
-            self.modules(),
+        return _train(
+            self,
             t,
             y,
             u,
@@ -552,36 +549,18 @@ class XFADS(TransformerMixin):
 
         keys = jrandom.split(key, len(X[0]))
         
-        _, moment_s, moment_p = batch_smooth(self.modules(), keys, *X)
+        _, moment_s, moment_p = batch_smooth(self, keys, *X)
         return moment_s, moment_p
-
-    def modules(self):
-        return (
-            self.dynamics,
-            self.likelihood,
-            self.obs_to_update,
-            self.back_encoder,
-        )
-
-    def set_modules(self, modules):
-        (
-            self.dynamics,
-            self.likelihood,
-            self.obs_to_update,
-            self.back_encoder,
-        ) = modules
 
     def save_model(self, file) -> None:
         with open(file, "wb") as f:
             spec = json.dumps(self.spec)
             f.write((spec + "\n").encode())
-            eqx.tree_serialise_leaves(f, self.modules())
+            eqx.tree_serialise_leaves(f, self)
 
     @classmethod
     def load_model(cls, file) -> Self:
         with open(file, "rb") as f:
             spec = json.loads(f.readline().decode())
             model = XFADS(**spec)
-            modules = eqx.tree_deserialise_leaves(f, model.modules())
-            model.set_modules(modules)
-            return model
+            return eqx.tree_deserialise_leaves(f, model)

@@ -129,7 +129,7 @@ def smooth(
 
 
 def bismooth(
-    modules: PyTree,
+    model,
     key: PRNGKeyArray,
     t: Array,
     y: Array,
@@ -144,13 +144,15 @@ def bismooth(
     Pm = Pfmf + Pbmb
     See Dowling23 Eq.(21-23)
     """
-    forward_dynamics, likelihood, obs_to_update, backward_dynamics = modules
+    # forward_dynamics, likelihood, obs_to_update, backward_dynamics = modules
+
     approx = hyperparam.approx
+
     natural_to_moment = jax.vmap(approx.natural_to_moment)
-    expected_moment_forward = partial(sample_expected_moment, f=forward_dynamics, noise=forward_dynamics, approx=approx, mc_size=hyperparam.mc_size)
-    expected_moment_backward = partial(sample_expected_moment, f=backward_dynamics, noise=backward_dynamics, approx=approx, mc_size=hyperparam.mc_size)    
+    expected_moment_forward = partial(sample_expected_moment, f=model.forward, noise=model.forward, approx=approx, mc_size=hyperparam.mc_size)
+    expected_moment_backward = partial(sample_expected_moment, f=model.backward, noise=model.backward, approx=approx, mc_size=hyperparam.mc_size)    
     
-    update_by_obs = jax.vmap(approx.constrain_natural)(jax.vmap(obs_to_update)(y))
+    update_by_obs = jax.vmap(approx.constrain_natural)(jax.vmap(model.obs_encoder)(y))
 
     nature_prior = approx.prior_natural(hyperparam.state_dim)
     
@@ -186,19 +188,12 @@ def bismooth(
     ## Backward
     key, subkey = jrandom.split(key, 2)
     (_, nature_b_Tp1), _ = ff((subkey, nature_f[-1]), (jnp.zeros_like(nature_prior), u[-1]), expected_moment_forward)
-    # nature_f_T = nature_f[-1]
-    # moment_f_T = approx.natural_to_moment(nature_f_T)
-    # moment_p_Tp1 = expected_moment_forward(subkey, moment_f_T, u[-1])
-    # nature_p_Tp1 = approx.moment_to_natural(moment_p_Tp1)
-
-    # nature_b_Tp1 = nature_f[-1]
 
     key, backward_key = jrandom.split(key, 2)
     _, (_, nature_p_b, _) = scan(
         partial(ff, expected_moment=expected_moment_backward), init=(backward_key, nature_b_Tp1), xs=(update_by_obs, u), reverse=True
     )
-    # nature_p_b[1: T-1]
-    # nature_p_b = jnp.vstack((nature_p_b, nature_prior))  # 1...T, smoothing distribution of z[T] equals to its filtering distribution
+
     nature_s = nature_f + nature_p_b - jnp.expand_dims(nature_prior, axis=0)
     moment_s = natural_to_moment(nature_s)
     

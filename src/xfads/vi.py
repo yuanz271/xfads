@@ -57,8 +57,11 @@ class PoissonLik(Module):
     def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx, mc_size: int) -> Array:
         mean_z, cov_z = approx.moment_to_canon(moment)
         eta = self.readout(t, mean_z)
-        eta = jnp.minimum(eta, MAX_LOGRATE)
-        lam = jnp.exp(eta)
+        V = jnp.diag(cov_z)
+        C = self.readout.weight
+        cvc = jnp.diag(C @ V @ C.T)
+        loglam = jnp.minimum(eta + 0.5 * cvc, MAX_LOGRATE)
+        lam = jnp.exp(loglam)
         ll = jnp.sum(y*eta - lam)
         # ll = tfp.Poisson(log_rate=eta).log_prob(y)
         return ll

@@ -12,16 +12,14 @@ from .core import Hyperparam
 from .trainer import Opt, train
 
 
-
-
-@dataclass
-class XFADS(TransformerMixin):
-    hyperparam: Hyperparam
-    dynamics: Module
-    likelihood: Likelihood
-    obs_to_update: Module
-    back_encoder: Module
-    opt: Opt
+class XFADS(eqx.Module):
+    spec: dict = eqx.field(static=True)
+    hyperparam: Hyperparam = eqx.field(static=True)
+    opt: Opt = eqx.field(static=True)
+    forward: eqx.Module
+    backward: eqx.Module
+    likelihood: eqx.Module
+    obs_encoder: eqx.Module
 
     def __init__(
         self,
@@ -38,22 +36,22 @@ class XFADS(TransformerMixin):
         backward_dynamics: str = "Nonlinear",
         approx: str = "DiagMVN",
         observation: str = "gaussian",
-        n_steps: int = 1,
-        biases: Array = "none",
+        n_steps: int = 0,
         norm_readout: bool = False,
         mc_size: int = 1,
         random_state: int = 0,
-        min_iter: int = 0,
-        max_em_iter: int = 1,
-        max_inner_iter: int = 1,
-        batch_size: int = 1,
         static_params: str = "",
-        regular: float = 1.,
+        fb_penalty: float = 0.0,
+        noise_penalty: float = 0.0,
         dyn_kwargs=None,
+        opt_kwargs=None,
     ) -> None:
         if dyn_kwargs is None:
             dyn_kwargs = {}
-            
+
+        if opt_kwargs is None:
+            opt_kwargs = {}
+
         self.spec: spec.ModelSpec = dict(
             observation_dim=observation_dim,
             state_dim=state_dim,
@@ -68,36 +66,36 @@ class XFADS(TransformerMixin):
             approx=approx,
             observation=observation,
             n_steps=n_steps,
-            biases="none",
             norm_readout=norm_readout,
             mc_size=mc_size,
             random_state=random_state,
-            min_iter=min_iter,
-            max_em_iter=max_em_iter,
-            max_inner_iter=max_inner_iter,
-            batch_size=batch_size,
             static_params=static_params,
-            regular=regular,
+            fb_penalty=fb_penalty,
+            noise_penalty=noise_penalty,
             dyn_kwargs=dyn_kwargs,
+            opt_kwargs=opt_kwargs,
         )
 
         key = jrandom.key(random_state)
         approx = getattr(distribution, approx, distribution.DiagMVN)
 
         self.hyperparam = Hyperparam(
-            approx, state_dim, input_dim, observation_dim, covariate_dim, mc_size, regular
+            approx,
+            state_dim,
+            input_dim,
+            observation_dim,
+            covariate_dim,
+            mc_size,
+            fb_penalty,
+            noise_penalty,
         )
-        self.opt = Opt(
-            min_iter=min_iter,
-            max_em_iter=max_em_iter,
-            max_inner_iter=max_inner_iter,
-            batch_size=batch_size,
-        )
+        self.opt = Opt(**opt_kwargs)
 
         key, fkey, bkey, rkey, enc_key = jrandom.split(key, 5)
-        
-        dynamics_class = Registry.get_class(forward_dynamics)
-        self.dynamics = dynamics_class(
+
+        dynamics_class = dynamics.get_class(forward_dynamics)
+        print(f"{dynamics_class=}")
+        self.forward = dynamics_class(
             key=fkey,
             state_dim=state_dim,
             input_dim=input_dim,
@@ -105,26 +103,24 @@ class XFADS(TransformerMixin):
             depth=depth,
             cov=state_noise * jnp.ones(state_dim),
             **dyn_kwargs,
-            )
-        
-        likelihood_class = getattr(vi, observation)
-        # print(likelihood_class.__name__)
-        if likelihood_class.__name__ == "PoissonLik":
-            self.likelihood = PoissonLik(state_dim, observation_dim, key=rkey, norm_readout=norm_readout, n_steps=n_steps, biases=biases)
-        else:
-            self.likelihood = DiagMVNLik(
-                cov=emission_noise * jnp.ones(observation_dim),
-                readout=enn.Linear(state_dim, observation_dim, key=rkey),
-                norm_readout=norm_readout,
-            )
+        )
 
-        self.obs_to_update, self.back_encoder = approx.get_encoders(
+        observation_class = observations.get_class(observation)
+        print(f"{observation_class=}")
+        self.likelihood = observation_class(
+            state_dim,
+            observation_dim,
+            key=rkey,
+            norm_readout=norm_readout,
+            n_steps=n_steps,
+        )
+
+        self.obs_encoder, _ = approx.get_encoders(
             observation_dim, state_dim, input_dim, depth, width, enc_key
         )
 
-        # NOTE: temporary
-        dynamics_class = Registry.get_class(backward_dynamics)
-        self.back_encoder = dynamics_class(
+        dynamics_class = dynamics.get_class(backward_dynamics)
+        self.backward = dynamics_class(
             key=bkey,
             state_dim=state_dim,
             input_dim=input_dim,
@@ -132,94 +128,48 @@ class XFADS(TransformerMixin):
             depth=depth,
             cov=state_noise * jnp.ones(state_dim),
             **dyn_kwargs,
-            )
-        # self.back_encoder = Nonlinear(
-        #     key=bkey,
-        #     state_dim=state_dim,
-        #     input_dim=input_dim,
-        #     width=width,
-        #     depth=depth,
-        #     cov=state_noise * jnp.ones(state_dim),
-        #     # **dyn_kwargs,
-        #     )
+        )
 
         if "l" in static_params:
             self.likelihood.set_static()
         if "s" in static_params:
-            self.dynamics.set_static()
+            self.forward.set_static()
 
-    def fit(self, X: tuple[Array, Array, Array], *, key, mode="joint") -> None:
-        match mode:
-            # case "em":
-            #     _train = train_em
-            # case "joint":
-            #     _train = partial(train_pseudo, mode=mode)
-            # case "pseudo":
-            #     _train = partial(train_pseudo, mode=mode)
-            case "bi":
-                _train = partial(train_pseudo, mode=mode)
-            case _:
-                raise ValueError(f"Unknown {mode=}")
-
-        t, y, u = X
-
-        (
-            self.dynamics,
-            self.likelihood,
-            self.obs_to_update,
-            self.back_encoder,
-        ) = _train(
-            self.modules(),
-            t,
-            y,
-            u,
-            self.hyperparam,
+    def fit(self, data: tuple[Array], *, key) -> None:
+        return train(
+            self,
+            *data,
             key=key,
-            opt=self.opt,
         )
+    
+    def init(self, data: tuple[Array]):
+        T, Y, U = data
+        mean_y = jnp.mean(Y, axis=0)
+        biases = jnp.log(jnp.maximum(mean_y, 1e-6))
+        return eqx.tree_at(lambda l: l.likelihood.readout.biases, self, biases)
 
     def transform(
-        self, X: tuple[Array, Array, Array], *, key: Array, mode: str
+        self, data: tuple[Array], *, key: Array
     ) -> tuple[Array, Array]:
-        if mode == "pseudo":
-            batch_smooth = jax.vmap(partial(core.smooth_pseudo, hyperparam=self.hyperparam), in_axes=(None, 0, 0, 0, 0))
-        elif mode == "bi":
-            batch_smooth = jax.vmap(partial(core.bismooth, hyperparam=self.hyperparam), in_axes=(None, 0, 0, 0, 0))
-        else:
-            batch_smooth = jax.vmap(partial(core.smooth, hyperparam=self.hyperparam), in_axes=(None, 0, 0, 0, 0))
-
-        keys = jrandom.split(key, len(X[0]))
-        
-        _, moment_s, moment_p = batch_smooth(self.modules(), keys, *X)
-        return moment_s, moment_p
-
-    def modules(self):
-        return (
-            self.dynamics,
-            self.likelihood,
-            self.obs_to_update,
-            self.back_encoder,
+        batch_smooth = jax.vmap(
+            partial(core.bismooth, hyperparam=self.hyperparam),
+            in_axes=(None, 0, 0, 0, 0),
         )
 
-    def set_modules(self, modules):
-        (
-            self.dynamics,
-            self.likelihood,
-            self.obs_to_update,
-            self.back_encoder,
-        ) = modules
+        keys = jrandom.split(key, len(data[0]))
+
+        _, moment_s, moment_p = batch_smooth(self, keys, *data)
+        return moment_s, moment_p
 
     def save_model(self, file) -> None:
         with open(file, "wb") as f:
             spec = json.dumps(self.spec)
             f.write((spec + "\n").encode())
-            eqx.tree_serialise_leaves(f, self.modules())
+            eqx.tree_serialise_leaves(f, self)
 
     @classmethod
     def load_model(cls, file) -> Self:
         with open(file, "rb") as f:
             spec = json.loads(f.readline().decode())
             model = XFADS(**spec)
-            modules = eqx.tree_deserialise_leaves(f, model.modules())
-            model.set_modules(modules)
-            return model
+            return eqx.tree_deserialise_leaves(f, model)

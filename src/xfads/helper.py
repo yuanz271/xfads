@@ -5,3 +5,23 @@ class SingletonMeta(type):
         if cls not in cls._instances:
             cls._instances[cls] = super().__call__(*args, **kwargs)
         return cls._instances[cls]
+
+
+class Registry:
+    def __init__(self):
+        self._registry = {}
+
+    def register(self, name=None):
+
+        def decorate(klass):
+            nonlocal name
+            if name is None:
+                name = klass.__name__
+            self._registry[name] = klass
+            return klass
+        
+        return decorate
+
+    def get_class(self, name):
+        klass = self._registry[name]
+        return klass

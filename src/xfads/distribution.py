@@ -7,9 +7,6 @@ from typing import Protocol
 from jax import nn as jnn, numpy as jnp, random as jrandom
 from jaxtyping import Array, Scalar, PRNGKeyArray
 import tensorflow_probability.substrates.jax.distributions as tfp
-
-from .encoder import PseudoObservation
-
 from .nn import make_mlp
 
 
@@ -22,11 +19,9 @@ def _inv(a):
 
 class MVN(Protocol):
     """Interface of MVN distributions
-    The subclasses should implement class functions performing
+    The classes should implement class functions performing
     converion between natural parameter and mean parameter.
-    The subclasses should be stateless.
     """
-    
     @classmethod
     def natural_to_moment(cls, natural) -> Array: ...
     
@@ -61,7 +56,7 @@ class MVN(Protocol):
     def noise_moment(cls, noise_cov) -> Array: ...
 
 
-class FullMVN(MVN):
+class FullMVN:
     @classmethod
     def natural_to_moment(cls, natural: Array) -> Array:
         """Pmu, -P/2 => mu, P"""
@@ -180,10 +175,10 @@ class FullMVN(MVN):
     
     @classmethod
     def noise_moment(cls, noise_cov) -> Array:
-        return jnp.diag(1 / noise_cov)
+        return jnp.diag(noise_cov)
 
 
-class LoRaMVN(FullMVN):
+class LoRaMVN:
     @classmethod
     def constrain_moment(cls, unconstrained: Array) -> Array:
         n = jnp.size(unconstrained)
@@ -212,8 +207,12 @@ class LoRaMVN(FullMVN):
         )
         return obs_enc, back_enc
 
+    @classmethod
+    def noise_moment(cls, noise_cov) -> Array:
+        return jnp.diag(noise_cov)
 
-class DiagMVN(MVN):
+
+class DiagMVN:
     @classmethod
     def natural_to_moment(cls, natural) -> Array:
         nat1, nat2 = jnp.split(natural, 2)

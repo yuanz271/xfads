@@ -1,16 +1,14 @@
 """
 Exponential-family variational distributions
 """
+
 import math
 from typing import Protocol
 
-from jax import nn as jnn, numpy as jnp, random as jrandom
+from jax import numpy as jnp, random as jrandom
 from jaxtyping import Array, Scalar, PRNGKeyArray
 import tensorflow_probability.substrates.jax.distributions as tfp
-
-from .encoder import PseudoObservation
-
-from .nn import make_mlp
+from .nn import make_mlp, softplus
 
 
 EPS = 1e-6
@@ -22,23 +20,22 @@ def _inv(a):
 
 class MVN(Protocol):
     """Interface of MVN distributions
-    The subclasses should implement class functions performing
+    The classes should implement class functions performing
     converion between natural parameter and mean parameter.
-    The subclasses should be stateless.
     """
-    
+
     @classmethod
     def natural_to_moment(cls, natural) -> Array: ...
-    
+
     @classmethod
     def moment_to_natural(cls, moment) -> Array: ...
-    
+
     @classmethod
     def sample_by_moment(cls, key, moment, mc_size) -> Array: ...
 
     @classmethod
     def param_size(cls, state_dim) -> int: ...
-    
+
     @classmethod
     def kl(cls, moment1, moment2) -> Scalar: ...
 
@@ -61,7 +58,7 @@ class MVN(Protocol):
     def noise_moment(cls, noise_cov) -> Array: ...
 
 
-class FullMVN(MVN):
+class FullMVN:
     @classmethod
     def natural_to_moment(cls, natural: Array) -> Array:
         """Pmu, -P/2 => mu, P"""
@@ -89,7 +86,9 @@ class FullMVN(MVN):
     @classmethod
     def sample_by_moment(cls, key: PRNGKeyArray, moment: Array, mc_size: int) -> Array:
         loc, V = cls.moment_to_canon(moment)
-        return jrandom.multivariate_normal(key, loc, V, shape=(mc_size,))  # It seems JAX does reparameterization trick
+        return jrandom.multivariate_normal(
+            key, loc, V, shape=(mc_size,)
+        )  # It seems JAX does reparameterization trick
 
     @classmethod
     def moment_to_canon(cls, moment: Array) -> tuple[Array, Array]:
@@ -98,7 +97,7 @@ class FullMVN(MVN):
         loc, v = jnp.split(moment, [m])
         V = jnp.reshape(v, (m, m))
         return loc, V
-    
+
     @classmethod
     def variable_size(cls, param_size: int) -> int:
         """
@@ -116,12 +115,16 @@ class FullMVN(MVN):
         v = V.flatten()
         moment = jnp.concatenate((mean, v))
         return moment
-    
+
     @classmethod
     def kl(cls, moment1: Array, moment2: Array) -> Scalar:
         m1, V1 = cls.moment_to_canon(moment1)
         m2, V2 = cls.moment_to_canon(moment2)
-        return tfp.kl_divergence(tfp.MultivariateNormalFullCovariance(m1, V1), tfp.MultivariateNormalFullCovariance(m2, V2))
+        return tfp.kl_divergence(
+            tfp.MultivariateNormalFullCovariance(m1, V1),
+            tfp.MultivariateNormalFullCovariance(m2, V2),
+            allow_nan_stats=False,
+        )
 
     @classmethod
     def param_size(cls, state_dim: int) -> int:
@@ -135,7 +138,7 @@ class FullMVN(MVN):
     @classmethod
     def full_cov(cls, V: Array) -> Array:
         return V
-    
+
     @classmethod
     def constrain_moment(cls, unconstrained: Array) -> Array:
         n = jnp.size(unconstrained)
@@ -145,7 +148,7 @@ class FullMVN(MVN):
 
         loc, diag, lora = jnp.split(unconstrained, [m, m + m])
         L = jnp.outer(lora, lora)
-        V = jnp.diag(jnn.softplus(diag)) + L
+        V = jnp.diag(softplus(diag)) + L
         v = V.flatten()
         return jnp.concatenate((loc, v))
 
@@ -158,32 +161,22 @@ class FullMVN(MVN):
 
         loc, diag, lora = jnp.split(unconstrained, [m, m + m])
         L = jnp.outer(lora, lora)
-        V = jnp.diag(jnn.softplus(diag)) + L
+        V = jnp.diag(softplus(diag)) + L
         v = -V.flatten()  # negative definite
         return jnp.concatenate((loc, v))
 
     @classmethod
-    def get_encoders(cls, observation_dim, state_dim, depth, width, key) -> tuple:
-        obs_key, back_key = jrandom.split(key)
+    def get_encoder(cls, observation_dim, state_dim, depth, width, key) -> tuple:
         unconstrained_size = state_dim + state_dim + state_dim
-        obs_enc = make_mlp(
-            observation_dim, unconstrained_size, width, depth, key=obs_key
-        )
-        back_enc = make_mlp(
-            cls.param_size(state_dim) * 2,
-            unconstrained_size,
-            width,
-            depth,
-            key=back_key,
-        )
-        return obs_enc, back_enc
-    
+        obs_enc = make_mlp(observation_dim, unconstrained_size, width, depth, key=key)
+        return obs_enc
+
     @classmethod
     def noise_moment(cls, noise_cov) -> Array:
-        return jnp.diag(1 / noise_cov)
+        return jnp.diag(noise_cov)
 
 
-class LoRaMVN(FullMVN):
+class LoRaMVN:
     @classmethod
     def constrain_moment(cls, unconstrained: Array) -> Array:
         n = jnp.size(unconstrained)
@@ -191,29 +184,23 @@ class LoRaMVN(FullMVN):
         m = (n - 1) // 2
 
         loc, diag, lora = jnp.split(unconstrained, [m, m + 1])
-        L =  jnp.outer(lora, lora)
-        V = jnn.softplus(diag) * jnp.eye(m) + L
+        L = jnp.outer(lora, lora)
+        V = softplus(diag) * jnp.eye(m) + L
         v = V.flatten()
         return jnp.concatenate((loc, v))
 
     @classmethod
-    def get_encoders(cls, observation_dim, state_dim, depth, width, key) -> tuple:
-        obs_key, back_key = jrandom.split(key)
+    def get_encoder(cls, observation_dim, state_dim, depth, width, key) -> tuple:
         unconstrained_size = state_dim + 1 + state_dim
-        obs_enc = make_mlp(
-            observation_dim, unconstrained_size, width, depth, key=obs_key
-        )
-        back_enc = make_mlp(
-            cls.param_size(state_dim) * 2,
-            unconstrained_size,
-            width,
-            depth,
-            key=back_key,
-        )
-        return obs_enc, back_enc
+        obs_enc = make_mlp(observation_dim, unconstrained_size, width, depth, key=key)
+        return obs_enc
+
+    @classmethod
+    def noise_moment(cls, noise_cov) -> Array:
+        return jnp.diag(noise_cov)
 
 
-class DiagMVN(MVN):
+class DiagMVN:
     @classmethod
     def natural_to_moment(cls, natural) -> Array:
         nat1, nat2 = jnp.split(natural, 2)
@@ -261,7 +248,9 @@ class DiagMVN(MVN):
         m1, cov1 = cls.moment_to_canon(moment1)
         m2, cov2 = cls.moment_to_canon(moment2)
         return tfp.kl_divergence(
-            tfp.MultivariateNormalDiag(m1, cov1), tfp.MultivariateNormalDiag(m2, cov2)
+            tfp.MultivariateNormalDiag(m1, cov1),
+            tfp.MultivariateNormalDiag(m2, cov2),
+            allow_nan_stats=False,
         )
 
     @classmethod
@@ -281,31 +270,23 @@ class DiagMVN(MVN):
     @classmethod
     def constrain_moment(cls, unconstrained) -> Array:
         loc, v = jnp.split(unconstrained, 2)
-        v = jnn.softplus(v)
+        v = softplus(v)
         return jnp.concatenate((loc, v))
 
     @classmethod
     def constrain_natural(cls, unconstrained) -> Array:
         loc, v = jnp.split(unconstrained, 2)
-        v = -jnn.softplus(v)
+        v = -softplus(v)
         return jnp.concatenate((loc, v))
 
     @classmethod
-    def get_encoders(cls, observation_dim, state_dim, input_dim, width, depth, key) -> tuple:
-        obs_key, back_key = jrandom.split(key)
+    def get_encoder(
+        cls, observation_dim, state_dim, input_dim, width, depth, key
+    ) -> tuple:
         obs_enc = make_mlp(
-            observation_dim, cls.param_size(state_dim), width, depth, key=obs_key
+            observation_dim, cls.param_size(state_dim), width, depth, key=key
         )
-        back_enc = make_mlp(
-            cls.param_size(state_dim) + input_dim,
-            cls.param_size(state_dim),
-            width,
-            depth,
-            key=back_key,
-        )
-
-        # pseudo_enc = PseudoObservation(observation_dim + cls.param_size(state_dim), width, cls.param_size(state_dim), key=back_key)
-        return obs_enc, back_enc
+        return obs_enc
 
     @classmethod
     def noise_moment(cls, noise_cov) -> Array:

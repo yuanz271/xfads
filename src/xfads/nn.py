@@ -1,6 +1,5 @@
 from functools import partial
 import math
-from mimetypes import init
 from typing import Callable, Optional
 
 import jax
@@ -11,10 +10,10 @@ from equinox import nn as enn, Module
 from equinox.nn import Linear
 
 
-EPS = 1e-6
+MIN_NORM = 1e-6
 
 
-def make_mlp(in_size, out_size, width, depth, *, key: PRNGKeyArray, activation: Callable=jnn.swish):
+def make_mlp(in_size, out_size, width, depth, *, key: PRNGKeyArray, activation: Callable=jnn.swish, final_bias=True):
     key, layer_key = jrandom.split(key)
     layers = [enn.Linear(in_size, width, key=layer_key), enn.Lambda(activation)]
     for i in range(depth - 1):
@@ -22,8 +21,13 @@ def make_mlp(in_size, out_size, width, depth, *, key: PRNGKeyArray, activation: 
         layers.append(enn.Linear(width, width, key=layer_key))
         layers.append(enn.Lambda(activation))
     key, layer_key = jrandom.split(key)
-    layers.append(enn.Linear(width, out_size, key=layer_key))
+    layers.append(enn.Linear(width, out_size, key=layer_key, use_bias=final_bias))
     return enn.Sequential(layers)
+
+
+def softplus(x):
+    """A numerical safe implementation"""
+    return jnp.log1p(jnp.exp(-jnp.abs(x))) + jnp.maximum(x, 0)
 
 
 def softplus_inverse(x):
@@ -67,7 +71,7 @@ class WeightNorm(Module):
     @property
     def weight(self) -> Array:
         w = getattr(self.layer, self.weight_name)
-        w = w / (self._norm(w) + EPS)
+        w = w / (self._norm(w) + MIN_NORM)
 
         return w
     
@@ -81,39 +85,57 @@ class WeightNorm(Module):
         :param x: JAX Array
         """
         weight = self.weight
-        layer = eqx.ree_at(
+        layer = eqx.tree_at(
             lambda layer: getattr(layer, self.weight_name), self.layer, weight
         )
         return layer(x)
 
 
-class VariantBiasLinear(Module):
-    biases: Array = eqx.field(static=False)
-    linear: Module
-
-    def __init__(self, state_dim, observation_dim, n_biases, biases, *, key, norm_readout: bool = False):
-        wkey, bkey = jrandom.split(key, 2)
-
-        self.linear = Linear(state_dim, observation_dim, key=wkey, use_bias=False)
-        if norm_readout:
-            self.linear = WeightNorm(self.linear)
+class StationaryLinear(Module):
+    layer: Module
+    
+    def __init__(self, state_dim, observation_dim, *, key, norm_readout: bool = False):
+        self.layer = Linear(state_dim, observation_dim, key=key, use_bias=True)
         
-        if biases == "none":
-            lim = 1 / math.sqrt(state_dim)
-            self.biases = jrandom.uniform(bkey, (n_biases, observation_dim), dtype=self.linear.weight.dtype, minval=-lim, maxval=lim)
-        else:
-            self.biases = biases
+        if norm_readout:
+            self.layer = WeightNorm(self.layer)        
+
+    def __call__(self, idx, x):
+        return self.layer(x)
+    
+    @property
+    def weight(self):
+        return self.layer.weight
+
+
+class VariantBiasLinear(Module):
+    biases: Array
+    layer: Module
+
+    def __init__(self, state_dim, observation_dim, n_biases, *, key, norm_readout: bool = False):
+        wkey, bkey = jrandom.split(key, 2)
+        
+        self.layer = Linear(state_dim, observation_dim, key=wkey, use_bias=False)
+        lim = 1 / math.sqrt(state_dim)
+        self.biases = jrandom.uniform(bkey, (n_biases, observation_dim), dtype=self.layer.weight.dtype, minval=-lim, maxval=lim)
+        
+        if norm_readout:
+            self.layer = WeightNorm(self.layer)        
     
     def __call__(self, idx, x):
-        x = self.linear(x)
+        x = self.layer(x)
         return x + self.biases[idx]
     
+    @property
+    def weight(self):
+        return self.layer.weight
+    
     def set_static(self, static=True) -> None:
-        self.__dataclass_fields__['biases'].metadata = {'static': static}
-
+        pass
+  
 
 def gauss_rbf(x, c, s):
-    return jnp.exp(-jnp.sum(jnp.square((x - c) * s)))
+    return jnp.exp(-jnp.sum(jnp.square((x - c)) * s))
 
 
 class RBFN(Module):
@@ -128,5 +150,5 @@ class RBFN(Module):
         self.readout = Linear(network_size, output_size, key=key)
 
     def __call__(self, x):
-        kernels = jax.vmap(gauss_rbf, in_axes=(None, 0, None))(x, self.centers, jnn.softplus(self.scale))
+        kernels = jax.vmap(gauss_rbf, in_axes=(None, 0, None))(x, self.centers, softplus(self.scale))
         return self.readout(kernels)

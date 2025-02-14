@@ -13,7 +13,6 @@ dependencies = [
     "numpy>=1.24.4",
     "scipy>=1.10.1",
     "scikit-learn>=1.4.1",
-    "jaxlib<0.5.0",
     "jax<0.5.0",
     "equinox>=0.11.11",
     "dm-tree<=0.1.8",

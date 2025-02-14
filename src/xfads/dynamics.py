@@ -3,56 +3,65 @@ from typing import Type
 
 import jax
 from jax import numpy as jnp, nn as jnn, random as jrandom
-from jaxtyping import Array, PRNGKeyArray
+from jaxtyping import Array, PRNGKeyArray, Scalar
 import equinox as eqx
 from equinox import Module, nn as enn
 
-from .helper import SingletonMeta
-from .nn import make_mlp, softplus_inverse, RBFN
+from .helper import Registry
+from .nn import make_mlp, softplus, softplus_inverse, RBFN
 from .distribution import MVN
 
-# TODO: decouple noise and transition
-# model(likelihood, transition, noise, approximate, data)
-# Decouple sample and deterministic
-# Module as container of trainable arrays
-# Never nest modules
 
-class Registry(metaclass=SingletonMeta):
-    _registry: dict = {}  # class variable
-
-    @classmethod
-    def register(cls, name=None):
-
-        def decorate(klass):
-            nonlocal name
-            if name is None:
-                name = klass.__name__
-            cls._registry[name] = klass
-            return klass
-        
-        return decorate
-
-    @classmethod
-    def get_class(cls, name):
-        klass = cls._registry[name]
-        return klass
+registry = Registry()
 
 
-class DiagNoise(Module):
-    unconstrained_cov: Array = eqx.field(static=False)
+def get_class(name) -> Type:
+    return registry.get_class(name)
     
-    def __init__(self, cov):
-        self.unconstrained_cov = softplus_inverse(cov)
+
+class Noise(Module):
+    unconstrained_cov: Array
+    
+    def __init__(self, cov, size):
+        self.unconstrained_cov = softplus_inverse(cov * jnp.ones(size))
 
     def cov(self) -> Array:
-        return jnn.softplus(self.unconstrained_cov)
+        return softplus(self.unconstrained_cov)
 
-    def set_static(self, static=True) -> None:
-        self.__dataclass_fields__['unconstrained_cov'].metadata = {'static': static}
+    # def set_static(self, static=True) -> None:
+    #     self.__dataclass_fields__['unconstrained_cov'].metadata = {'static': static}
 
 
-@Registry.register()
-class Diffusion(DiagNoise):
+class Isotropic(Module):
+    unconstrained_var: Array
+    size: int = eqx.field(static=True)
+    
+    def __init__(self, var, size):
+        self.unconstrained_var = jax.scipy.special.logit(var)
+        self.size = size
+
+    def var(self) -> Scalar:
+        return jnn.sigmoid(self.unconstrained_var)
+
+    def cov(self) -> Array:
+        return self.var() * jnp.ones(self.size)
+
+
+class AbstractDynamics(Module):
+    noise: eqx.AbstractVar[Module]
+
+    def cov(self) -> Array:
+        return self.noise.cov()
+    
+    def loss(self) -> Scalar:
+        0.
+
+
+@registry.register()
+class Diffusion(AbstractDynamics):
+    noise: Module
+    B: Module
+
     def __init__(
         self,
         state_dim: int,
@@ -62,15 +71,18 @@ class Diffusion(DiagNoise):
         cov,
         *,
         key: PRNGKeyArray,
+        **kwargs,
     ):
-        super().__init__(cov)
+        self.noise = Isotropic(cov, state_dim)
+        self.B = eqx.nn.Linear(input_dim, state_dim, use_bias=False, key=key)
 
     def __call__(self, z: Array, u: Array) -> Array:
-        return z
+        return jnp.sqrt(1 - self.noise.var()) * z + self.B(u)
 
 
-@Registry.register()
-class Nonlinear(DiagNoise):
+@registry.register()
+class Nonlinear(AbstractDynamics):
+    noise: Module
     forward: Module
 
     def __init__(
@@ -82,8 +94,10 @@ class Nonlinear(DiagNoise):
         cov,
         *,
         key: PRNGKeyArray,
+        **kwargs,
     ):
-        super().__init__(cov)
+        self.noise = Noise(cov, state_dim)
+
         self.forward = make_mlp(
             state_dim + input_dim, state_dim, width, depth, key=key
         )
@@ -93,8 +107,9 @@ class Nonlinear(DiagNoise):
         return self.forward(x)
     
 
-@Registry.register()
-class RBFNLinear(DiagNoise):
+@registry.register()
+class RBFNLinear(AbstractDynamics):
+    noise: Module
     forward: Module 
     drive: Module
     
@@ -107,8 +122,9 @@ class RBFNLinear(DiagNoise):
         cov,
         *,
         key: PRNGKeyArray,
+        **kwargs,
     ):
-        super().__init__(cov)
+        self.noise = Noise(cov, state_dim)
 
         fkey, dkey = jrandom.split(key)
         self.forward = RBFN(
@@ -121,8 +137,9 @@ class RBFNLinear(DiagNoise):
         return z + self.forward(z) + self.drive(u)
 
 
-@Registry.register()
-class LocallyLinearInput(DiagNoise):
+@registry.register()
+class LocallyLinearInput(AbstractDynamics):
+    noise: Module
     B_shape: tuple[int, int] = eqx.field(static=True)
     recurrent: Module 
     drive: Module 
@@ -137,7 +154,7 @@ class LocallyLinearInput(DiagNoise):
         *,
         key: PRNGKeyArray,
     ):
-        super().__init__(cov)
+        self.noise = Noise(cov, state_dim)
         recurrent_key, input_key = jrandom.split(key)
         self.drive = make_mlp(
             state_dim, state_dim * input_dim, width, depth, key=input_key
@@ -151,8 +168,9 @@ class LocallyLinearInput(DiagNoise):
         return self.recurrent(z) + B @ u
     
 
-@Registry.register()
-class LinearInput(DiagNoise):
+@registry.register()
+class LinearInput(AbstractDynamics):
+    noise: Module
     recurrent: Module 
     drive: Module 
 
@@ -166,7 +184,7 @@ class LinearInput(DiagNoise):
         *,
         key: PRNGKeyArray,
     ):
-        super().__init__(cov)
+        self.noise = Noise(cov, state_dim)
         recurrent_key, input_key = jrandom.split(key)
         self.recurrent = make_mlp(
             state_dim, state_dim, width, depth, key=recurrent_key
@@ -178,7 +196,7 @@ class LinearInput(DiagNoise):
 
 
 def predict_moment(
-    z: Array, u: Array, f, noise: DiagNoise, approx: Type[MVN]
+    z: Array, u: Array, f, noise: Noise, approx: Type[MVN]
 ) -> Array:
     """mu[t](z[t-1])"""
     ztp1 = f(z, u)
@@ -201,7 +219,7 @@ def sample_expected_moment(
     moment: Array,
     u: Array,
     f,
-    noise: DiagNoise,
+    noise: Noise,
     approx: Type[MVN],
     mc_size: int,
 ) -> Array:

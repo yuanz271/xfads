@@ -1,18 +1,18 @@
 from typing import Protocol, Type
 
 import jax
-from jax import numpy as jnp, nn as jnn
+from jax import numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, Scalar
 import tensorflow_probability.substrates.jax.distributions as tfp
 import chex
 import equinox as eqx
 
-from .nn import softplus_inverse, VariantBiasLinear, StationaryLinear
+from .nn import softplus, softplus_inverse, VariantBiasLinear, StationaryLinear
 from .distribution import MVN
 from .helper import Registry
 
 
-MAX_LOGRATE = 15.
+MAX_LOGRATE = 7.
 registry = Registry()
 
 
@@ -51,10 +51,11 @@ class Poisson(eqx.Module):
         V = jnp.diag(cov_z)
         C = self.readout.weight
         cvc = jnp.diag(C @ V @ C.T)
-        loglam = jnp.minimum(eta + 0.5 * cvc, MAX_LOGRATE)
+        loglam = eta + 0.5 * cvc
+        # loglam = jnp.where(loglam < MAX_LOGRATE, loglam, jnp.log(loglam))
+        loglam = jnp.minimum(loglam, MAX_LOGRATE)
         lam = jnp.exp(loglam)
         ll = jnp.sum(y*eta - lam)
-        ll = jnp.nan_to_num(ll)
         return ll
 
 
@@ -75,7 +76,7 @@ class DiagGaussian(eqx.Module):
             self.readout = StationaryLinear(state_dim, observation_dim, key=key, norm_readout=norm_readout)
 
     def cov(self):
-        return jnn.softplus(self.unconstrained_cov)
+        return softplus(self.unconstrained_cov)
 
     def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx: Type[MVN], mc_size: int) -> Array:
         mean_z, cov_z = approx.moment_to_canon(moment)

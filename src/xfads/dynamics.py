@@ -8,28 +8,43 @@ import equinox as eqx
 from equinox import Module, nn as enn
 
 from .helper import Registry
-from .nn import make_mlp, softplus_inverse, RBFN
+from .nn import make_mlp, softplus, softplus_inverse, RBFN
 from .distribution import MVN
 
 
 registry = Registry()
 
 
-def get_class(name):
+def get_class(name) -> Type:
     return registry.get_class(name)
     
 
 class Noise(Module):
     unconstrained_cov: Array
     
-    def __init__(self, cov):
-        self.unconstrained_cov = softplus_inverse(cov)
+    def __init__(self, cov, size):
+        self.unconstrained_cov = softplus_inverse(cov * jnp.ones(size))
 
     def cov(self) -> Array:
-        return jnn.softplus(self.unconstrained_cov)
+        return softplus(self.unconstrained_cov)
 
     # def set_static(self, static=True) -> None:
     #     self.__dataclass_fields__['unconstrained_cov'].metadata = {'static': static}
+
+
+class Isotropic(Module):
+    unconstrained_var: Array
+    size: int = eqx.field(static=True)
+    
+    def __init__(self, var, size):
+        self.unconstrained_var = jax.scipy.special.logit(var)
+        self.size = size
+
+    def var(self) -> Scalar:
+        return jnn.sigmoid(self.unconstrained_var)
+
+    def cov(self) -> Array:
+        return self.var() * jnp.ones(self.size)
 
 
 class AbstractDynamics(Module):
@@ -45,7 +60,8 @@ class AbstractDynamics(Module):
 @registry.register()
 class Diffusion(AbstractDynamics):
     noise: Module
-    
+    B: Module
+
     def __init__(
         self,
         state_dim: int,
@@ -57,10 +73,11 @@ class Diffusion(AbstractDynamics):
         key: PRNGKeyArray,
         **kwargs,
     ):
-        self.noise = Noise(cov)
+        self.noise = Isotropic(cov, state_dim)
+        self.B = eqx.nn.Linear(input_dim, state_dim, use_bias=False, key=key)
 
     def __call__(self, z: Array, u: Array) -> Array:
-        return z
+        return jnp.sqrt(1 - self.noise.var()) * z + self.B(u)
 
 
 @registry.register()
@@ -79,7 +96,7 @@ class Nonlinear(AbstractDynamics):
         key: PRNGKeyArray,
         **kwargs,
     ):
-        self.noise = Noise(cov)
+        self.noise = Noise(cov, state_dim)
 
         self.forward = make_mlp(
             state_dim + input_dim, state_dim, width, depth, key=key
@@ -107,7 +124,7 @@ class RBFNLinear(AbstractDynamics):
         key: PRNGKeyArray,
         **kwargs,
     ):
-        self.noise = Noise(cov)
+        self.noise = Noise(cov, state_dim)
 
         fkey, dkey = jrandom.split(key)
         self.forward = RBFN(
@@ -137,7 +154,7 @@ class LocallyLinearInput(AbstractDynamics):
         *,
         key: PRNGKeyArray,
     ):
-        self.noise = Noise(cov)
+        self.noise = Noise(cov, state_dim)
         recurrent_key, input_key = jrandom.split(key)
         self.drive = make_mlp(
             state_dim, state_dim * input_dim, width, depth, key=input_key
@@ -167,7 +184,7 @@ class LinearInput(AbstractDynamics):
         *,
         key: PRNGKeyArray,
     ):
-        self.noise = Noise(cov)
+        self.noise = Noise(cov, state_dim)
         recurrent_key, input_key = jrandom.split(key)
         self.recurrent = make_mlp(
             state_dim, state_dim, width, depth, key=recurrent_key

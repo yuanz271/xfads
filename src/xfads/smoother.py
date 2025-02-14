@@ -9,13 +9,24 @@ import equinox as eqx
 
 from . import core, distribution, dynamics, observations, spec
 from .core import Hyperparam
-from .trainer import Opt, train
+
+
+def make_batch_smooth(model, dropout):# -> Callable[..., tuple[Any, Any, Array]]:
+    _smooth = jax.vmap(partial(core.bismooth, model=model))
+    batch_encode = jax.vmap(jax.vmap(lambda x: model.obs_encoder(x)))
+    
+    @jax.jit
+    def batch_smooth(key, t, y, u):
+        key, subkey = jrandom.split(key)
+        alpha = batch_encode(y)
+        return _smooth(jrandom.split(key, len(t)), t, alpha, u)
+    
+    return batch_smooth
 
 
 class XFADS(eqx.Module):
     spec: dict = eqx.field(static=True)
     hyperparam: Hyperparam = eqx.field(static=True)
-    opt: Opt = eqx.field(static=True)
     forward: eqx.Module
     backward: eqx.Module
     likelihood: eqx.Module
@@ -89,24 +100,22 @@ class XFADS(eqx.Module):
             fb_penalty,
             noise_penalty,
         )
-        self.opt = Opt(**opt_kwargs)
+        # self.opt = Opt(**opt_kwargs)
 
         key, fkey, bkey, rkey, enc_key = jrandom.split(key, 5)
 
         dynamics_class = dynamics.get_class(forward_dynamics)
-        print(f"{dynamics_class=}")
         self.forward = dynamics_class(
             key=fkey,
             state_dim=state_dim,
             input_dim=input_dim,
             width=width,
             depth=depth,
-            cov=state_noise * jnp.ones(state_dim),
+            cov=state_noise,
             **dyn_kwargs,
         )
 
         observation_class = observations.get_class(observation)
-        print(f"{observation_class=}")
         self.likelihood = observation_class(
             state_dim,
             observation_dim,
@@ -115,7 +124,7 @@ class XFADS(eqx.Module):
             n_steps=n_steps,
         )
 
-        self.obs_encoder, _ = approx.get_encoders(
+        self.obs_encoder = approx.get_encoder(
             observation_dim, state_dim, input_dim, depth, width, enc_key
         )
 
@@ -126,7 +135,7 @@ class XFADS(eqx.Module):
             input_dim=input_dim,
             width=width,
             depth=depth,
-            cov=state_noise * jnp.ones(state_dim),
+            cov=state_noise,
             **dyn_kwargs,
         )
 
@@ -135,12 +144,12 @@ class XFADS(eqx.Module):
         if "s" in static_params:
             self.forward.set_static()
 
-    def fit(self, data: tuple[Array], *, key) -> None:
-        return train(
-            self,
-            *data,
-            key=key,
-        )
+    # def fit(self, data: tuple[Array], *, key) -> None:
+    #     return trainer.train(
+    #         self,
+    #         *data,
+    #         key=key,
+    #     )
     
     def init(self, data: tuple[Array]):
         T, Y, U = data
@@ -151,14 +160,8 @@ class XFADS(eqx.Module):
     def transform(
         self, data: tuple[Array], *, key: Array
     ) -> tuple[Array, Array]:
-        batch_smooth = jax.vmap(
-            partial(core.bismooth, hyperparam=self.hyperparam),
-            in_axes=(None, 0, 0, 0, 0),
-        )
-
-        keys = jrandom.split(key, len(data[0]))
-
-        _, moment_s, moment_p = batch_smooth(self, keys, *data)
+        batch_smooth = make_batch_smooth(self, dropout=0.)
+        _, moment_s, moment_p = batch_smooth(key, *data)
         return moment_s, moment_p
 
     def save_model(self, file) -> None:

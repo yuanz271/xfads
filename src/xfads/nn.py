@@ -10,10 +10,10 @@ from equinox import nn as enn, Module
 from equinox.nn import Linear
 
 
-EPS = 1e-6
+MIN_NORM = 1e-6
 
 
-def make_mlp(in_size, out_size, width, depth, *, key: PRNGKeyArray, activation: Callable=jnn.swish):
+def make_mlp(in_size, out_size, width, depth, *, key: PRNGKeyArray, activation: Callable=jnn.swish, final_bias=True):
     key, layer_key = jrandom.split(key)
     layers = [enn.Linear(in_size, width, key=layer_key), enn.Lambda(activation)]
     for i in range(depth - 1):
@@ -21,8 +21,13 @@ def make_mlp(in_size, out_size, width, depth, *, key: PRNGKeyArray, activation: 
         layers.append(enn.Linear(width, width, key=layer_key))
         layers.append(enn.Lambda(activation))
     key, layer_key = jrandom.split(key)
-    layers.append(enn.Linear(width, out_size, key=layer_key))
+    layers.append(enn.Linear(width, out_size, key=layer_key, use_bias=final_bias))
     return enn.Sequential(layers)
+
+
+def softplus(x):
+    """A numerical safe implementation"""
+    return jnp.log1p(jnp.exp(-jnp.abs(x))) + jnp.maximum(x, 0)
 
 
 def softplus_inverse(x):
@@ -66,7 +71,7 @@ class WeightNorm(Module):
     @property
     def weight(self) -> Array:
         w = getattr(self.layer, self.weight_name)
-        w = w / (self._norm(w) + EPS)
+        w = w / (self._norm(w) + MIN_NORM)
 
         return w
     
@@ -130,7 +135,7 @@ class VariantBiasLinear(Module):
   
 
 def gauss_rbf(x, c, s):
-    return jnp.exp(-jnp.sum(jnp.square((x - c) * s)))
+    return jnp.exp(-jnp.sum(jnp.square((x - c)) * s))
 
 
 class RBFN(Module):
@@ -145,5 +150,5 @@ class RBFN(Module):
         self.readout = Linear(network_size, output_size, key=key)
 
     def __call__(self, x):
-        kernels = jax.vmap(gauss_rbf, in_axes=(None, 0, None))(x, self.centers, jnn.softplus(self.scale))
+        kernels = jax.vmap(gauss_rbf, in_axes=(None, 0, None))(x, self.centers, softplus(self.scale))
         return self.readout(kernels)

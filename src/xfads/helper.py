@@ -1,3 +1,6 @@
+import warnings
+
+
 class SingletonMeta(type):
     _instances = {}  # class variable
 
@@ -17,7 +20,10 @@ class Registry:
             nonlocal name
             if name is None:
                 name = klass.__name__
-            self._registry[name] = klass
+            if name in self._registry:
+                warnings.warn(f"{name} exists")
+            else:    
+                self._registry[name] = klass
             return klass
         
         return decorate

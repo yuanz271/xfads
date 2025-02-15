@@ -134,7 +134,7 @@ def train(
         chex.assert_equal_shape((free_energy, wb))
         
         loss = (
-            jnp.mean(free_energy)
+            jnp.mean(free_energy * wb)
             + model.hyperparam.fb_penalty * fb_loss
             + model.hyperparam.noise_penalty * model.forward.loss()
             # + hyperparam.noise_penalty * model.backward.loss()

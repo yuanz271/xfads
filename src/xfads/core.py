@@ -22,6 +22,46 @@ class Hyperparam:
     mc_size: int
     fb_penalty: float = 0.
     noise_penalty: float = 0.
+    mode: str = "pseudo"
+
+
+def filter(
+    key: PRNGKeyArray,
+    t: Array,
+    alpha: Array,
+    u: Array,
+    model,
+):
+    """
+    :param alpha: obs info
+    """
+    approx = model.hyperparam.approx
+    nature_p_1 = approx.prior_natural(model.hyperparam.state_dim)  # TODO: where should prior belongs, approx or dynamics?
+
+    expected_moment_forward = partial(sample_expected_moment, f=model.forward, noise=model.forward, approx=approx, mc_size=model.hyperparam.mc_size)
+
+    nature_f_1 = nature_p_1 + alpha[0]
+
+    def ff(carry, obs, expected_moment):
+        key, nature_tm1 = carry
+        key, subkey = jrandom.split(key)
+        a_t, u_tm1 = obs
+        moment_tm1 = approx.natural_to_moment(nature_tm1)
+        moment_p_t = expected_moment(subkey, moment_tm1, u_tm1)
+        nature_p_t = approx.moment_to_natural(moment_p_t)
+        nature_t = nature_p_t + a_t
+        return (key, nature_t), (moment_p_t, nature_p_t, nature_t)
+
+    key, subkey = jrandom.split(key, 2)
+    _, (moment_p, _, nature_f) = scan(
+        partial(ff, expected_moment=expected_moment_forward), init=(subkey, nature_f_1), xs=(alpha[1:], u[:-1])  # t = 2 ... T+1
+    )
+    nature_f = jnp.vstack((nature_f_1, nature_f))  # 1...T
+
+    moment_f = jax.vmap(approx.natural_to_moment)(nature_f)
+    moment_p = jnp.vstack((approx.natural_to_moment(nature_f_1), moment_p))  # prediction of t=1 is the prior
+
+    return nature_f, moment_f, moment_p
 
 
 def bismooth(

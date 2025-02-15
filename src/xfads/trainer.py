@@ -23,31 +23,7 @@ class Opt:
     seed: int = 0
     dropout: float = 0.0
     noise_eta: float = 0.5
-    noise_gamma: float = 0.95
-
-
-# def make_batch_elbo(
-#     eloglik, approx, mc_size
-# ) -> Callable[[Array, Array, Array, Array, Array, Optional[Callable]], Scalar]:
-#     elbo = jax.vmap(
-#         jax.vmap(partial(vi.elbo, eloglik=eloglik, approx=approx, mc_size=mc_size))
-#     )  # (batch, seq)
-
-#     @eqx.filter_jit
-#     def _elbo(
-#         key: Array,
-#         ts: Array,
-#         moment_s: Array,
-#         moment_p: Array,
-#         ys: Array,
-#         *,
-#         reduce: Callable = jnp.nanmean,
-#     ) -> Scalar:
-#         keys = jrandom.split(key, ys.shape[:2])  # ys.shape[:2] + (2,)
-#         # jax.debug.print("{a}, {b}, {c}, {d}, {e}", a=keys.shape, b=ts.shape, c=moment_s.shape, d=moment_p.shape, e=ys.shape)
-#         return reduce(elbo(keys, ts, moment_s, moment_p, ys))
-
-#     return _elbo
+    noise_gamma: float = 0.8
 
 
 def make_optimizer(model, opt: Opt):
@@ -87,36 +63,16 @@ def loader(
         yield key_k, *ret
 
 
-def batch_dropout(key, y, prob) -> Array:
-    mask = jrandom.bernoulli(key, 1 - prob, y.shape[:2] + (1,))  # broadcast to the last dimension
-    return mask, mask * y / (1 - prob)
-
-
 def train(
     model: smoother.XFADS,
-    t: Array,
-    y: Array,
-    u: Array,
-    opt: Opt,
+    data,
     *,
     key: Array,
-) -> tuple:
-    chex.assert_rank((y, u), 3)
-    chex.assert_equal_shape((t, y, u), dims=(0, 1))
+    opt: Opt,
+) -> smoother.XFADS:
+    chex.assert_equal_shape(data, dims=(0, 1))
 
-    def batch_smooth(model, key, t, y, u, dropout):
-        _smooth = jax.vmap(partial(core.bismooth, model=model))
-        batch_encode = jax.vmap(jax.vmap(lambda x: model.hyperparam.approx.constrain_natural(model.obs_encoder(x))))
-
-        key, subkey = jrandom.split(key)
-
-        mask, y = batch_dropout(subkey, y, dropout)
-        alpha = batch_encode(y)
-        alpha = mask * alpha
-
-        return _smooth(jrandom.split(key, len(t)), t, alpha, u)
-
-    def batch_elbo(model, key, ts, moment_s, moment_p, ys):
+    def batch_elbo(model, key, ts, moment_s, moment_p, ys) -> Array:
         _elbo = jax.vmap(
             jax.vmap(
                 partial(
@@ -130,7 +86,7 @@ def train(
 
         keys = jrandom.split(key, ys.shape[:2])  # ys.shape[:2] + (2,)
 
-        return jnp.nanmean(_elbo(keys, ts, moment_s, moment_p, ys))
+        return _elbo(keys, ts, moment_s, moment_p, ys)
 
     def batch_sample(
         key, moment: Float[Array, "batch time moment"], approx
@@ -158,39 +114,44 @@ def train(
         zt = eqx.filter_vmap(eqx.filter_vmap(model.forward))(ztm1, u)
         return zt
 
-    def batch_loss(model, key, tb, yb, ub) -> Scalar:
+    @eqx.filter_jit
+    def batch_loss(model, key, tb, yb, ub, wb) -> Scalar:
         key, subkey = jrandom.split(key)
         chex.assert_equal_shape((tb, yb, ub), dims=(0, 1))
 
         key, subkey = jrandom.split(key)
-        _, moment_s, moment_p = batch_smooth(model, subkey, tb, yb, ub, opt.dropout)
+        _, moment, moment_p = smoother.batch_smooth(model, subkey, tb, yb, ub, opt.dropout)
 
         key, subkey = jrandom.split(key)
-        zb = batch_sample(subkey, moment_s, model.hyperparam.approx)
+        zb = batch_sample(subkey, moment, model.hyperparam.approx)
         zb_hat_fb = batch_fb_predict(model, zb, ub)
         zb_hat_bf = batch_bf_predict(model, zb, ub)
-        fb_loss = jnp.nanmean((zb_hat_fb - zb_hat_bf) ** 2)
+        fb_loss = jnp.mean((zb_hat_fb - zb_hat_bf) ** 2)
 
         key, subkey = jrandom.split(key)
+        free_energy = -batch_elbo(model, subkey, tb, moment, moment_p, yb)
+
+        chex.assert_equal_shape((free_energy, wb))
+        
         loss = (
-            -batch_elbo(model, subkey, tb, moment_s, moment_p, yb)
-            # + model.hyperparam.fb_penalty * fb_loss
-            # + model.hyperparam.noise_penalty * model.forward.loss()
+            jnp.mean(free_energy)
+            + model.hyperparam.fb_penalty * fb_loss
+            + model.hyperparam.noise_penalty * model.forward.loss()
             # + hyperparam.noise_penalty * model.backward.loss()
         )  
 
         return loss
 
-    def optimize(model, key, batch_loss_func, *args):
+    def optimize(model, key, batch_loss_func, *data):
         optimizer, opt_state = make_optimizer(model, opt)
 
         @eqx.filter_value_and_grad
-        def loss_func(model, key, *args) -> Scalar:
-            return batch_loss_func(model, key, *args)
+        def loss_func(model, key, *data) -> Scalar:
+            return batch_loss_func(model, key, *data)
 
         @eqx.filter_jit
-        def step(model, key, opt_state, *args):
-            loss, grads = loss_func(model, key, *args)
+        def step(model, key, opt_state, *data):
+            loss, grads = loss_func(model, key, *data)
             updates, opt_state = optimizer.update(grads, opt_state, model)
             model = eqx.apply_updates(model, updates)
             return model, opt_state, loss
@@ -201,18 +162,17 @@ def train(
             for i in pbar:
                 try:
                     key_i = jrandom.fold_in(key, i)
-                    for minibatch_key, *argm in loader(
-                        *args, batch_size=opt.batch_size, key=key_i
+                    for minibatch_key, *minibatch in loader(
+                        *data, batch_size=opt.batch_size, key=key_i
                     ):
                         model, opt_state, loss = step(
-                            model, minibatch_key, opt_state, *argm
+                            model, minibatch_key, opt_state, *minibatch
                         )
-                        chex.assert_tree_all_finite(loss)
                 except KeyboardInterrupt:
                     terminate = True
 
                 key, subkey = jrandom.split(key, 2)
-                loss = batch_loss_func(model, subkey, *args)
+                loss = batch_loss_func(model, subkey, *data)
                 pbar.set_postfix({"loss": f"{loss:.3f}"})
 
                 chex.assert_tree_all_finite(loss)
@@ -227,6 +187,6 @@ def train(
 
             return model, loss
 
-    model, loss = optimize(model, key, batch_loss, t, y, u)
+    model, loss = optimize(model, key, batch_loss, *data)
 
     return model

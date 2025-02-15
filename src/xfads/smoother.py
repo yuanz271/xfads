@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Self
+from typing import Self, Type
 import json
 
 from jaxtyping import Array
@@ -7,21 +7,13 @@ import jax
 from jax import numpy as jnp, random as jrandom
 import equinox as eqx
 
-from . import core, distribution, dynamics, observations, spec
+from . import core, distribution, dynamics, observations, spec, encoders
 from .core import Hyperparam
 
 
-def make_batch_smooth(model, dropout):# -> Callable[..., tuple[Any, Any, Array]]:
-    _smooth = jax.vmap(partial(core.bismooth, model=model))
-    batch_encode = jax.vmap(jax.vmap(lambda x: model.obs_encoder(x)))
-    
-    @jax.jit
-    def batch_smooth(key, t, y, u):
-        key, subkey = jrandom.split(key)
-        alpha = batch_encode(y)
-        return _smooth(jrandom.split(key, len(t)), t, alpha, u)
-    
-    return batch_smooth
+def batch_dropout(key, y, prob) -> Array:
+    mask = jrandom.bernoulli(key, 1 - prob, y.shape[:2] + (1,))  # broadcast to the last dimension
+    return mask, mask * y / (1 - prob)
 
 
 class XFADS(eqx.Module):
@@ -31,17 +23,17 @@ class XFADS(eqx.Module):
     backward: eqx.Module
     likelihood: eqx.Module
     obs_encoder: eqx.Module
+    backward_encoder: eqx.Module
 
     def __init__(
         self,
         observation_dim,
         state_dim,
         input_dim,
-        width,
-        depth,
         emission_noise,
         state_noise,
         *,
+        mode: str = "pseudo",
         covariate_dim: int = 0,
         forward_dynamics: str = "Nonlinear",
         backward_dynamics: str = "Nonlinear",
@@ -55,20 +47,19 @@ class XFADS(eqx.Module):
         fb_penalty: float = 0.0,
         noise_penalty: float = 0.0,
         dyn_kwargs=None,
-        opt_kwargs=None,
+        enc_kwargs=None,
     ) -> None:
         if dyn_kwargs is None:
             dyn_kwargs = {}
 
-        if opt_kwargs is None:
-            opt_kwargs = {}
+        if enc_kwargs is None:
+            enc_kwargs = {}
 
         self.spec: spec.ModelSpec = dict(
+            mode=mode,
             observation_dim=observation_dim,
             state_dim=state_dim,
             input_dim=input_dim,
-            width=width,
-            depth=depth,
             emission_noise=emission_noise,
             state_noise=state_noise,
             covariate_dim=covariate_dim,
@@ -83,12 +74,13 @@ class XFADS(eqx.Module):
             static_params=static_params,
             fb_penalty=fb_penalty,
             noise_penalty=noise_penalty,
+            enc_kwargs=enc_kwargs,
             dyn_kwargs=dyn_kwargs,
-            opt_kwargs=opt_kwargs,
         )
 
         key = jrandom.key(random_state)
-        approx = getattr(distribution, approx, distribution.DiagMVN)
+
+        approx: Type = getattr(distribution, approx, distribution.DiagMVN)
 
         self.hyperparam = Hyperparam(
             approx,
@@ -100,17 +92,14 @@ class XFADS(eqx.Module):
             fb_penalty,
             noise_penalty,
         )
-        # self.opt = Opt(**opt_kwargs)
 
-        key, fkey, bkey, rkey, enc_key = jrandom.split(key, 5)
+        key, fkey, bkey, rkey = jrandom.split(key, 4)
 
         dynamics_class = dynamics.get_class(forward_dynamics)
         self.forward = dynamics_class(
             key=fkey,
             state_dim=state_dim,
             input_dim=input_dim,
-            width=width,
-            depth=depth,
             cov=state_noise,
             **dyn_kwargs,
         )
@@ -123,18 +112,20 @@ class XFADS(eqx.Module):
             norm_readout=norm_readout,
             n_steps=n_steps,
         )
-
-        self.obs_encoder = approx.get_encoder(
-            observation_dim, state_dim, input_dim, depth, width, enc_key
-        )
+        
+        #####
+        key, subkey = jrandom.split(key)
+        self.obs_encoder = encoders.LocalEncoder(state_dim, observation_dim, approx=approx, key=subkey, **enc_kwargs)
+        
+        key, subkey = jrandom.split(key)
+        self.backward_encoder = encoders.BackwardEncoder(state_dim, approx=approx, key=subkey, **enc_kwargs)
+        #####
 
         dynamics_class = dynamics.get_class(backward_dynamics)
         self.backward = dynamics_class(
             key=bkey,
             state_dim=state_dim,
             input_dim=input_dim,
-            width=width,
-            depth=depth,
             cov=state_noise,
             **dyn_kwargs,
         )
@@ -143,13 +134,6 @@ class XFADS(eqx.Module):
             self.likelihood.set_static()
         if "s" in static_params:
             self.forward.set_static()
-
-    # def fit(self, data: tuple[Array], *, key) -> None:
-    #     return trainer.train(
-    #         self,
-    #         *data,
-    #         key=key,
-    #     )
     
     def init(self, data: tuple[Array]):
         T, Y, U = data
@@ -160,8 +144,7 @@ class XFADS(eqx.Module):
     def transform(
         self, data: tuple[Array], *, key: Array
     ) -> tuple[Array, Array]:
-        batch_smooth = make_batch_smooth(self, dropout=0.)
-        _, moment_s, moment_p = batch_smooth(key, *data)
+        _, moment_s, moment_p = batch_smooth(self, key, *data, 0.)
         return moment_s, moment_p
 
     def save_model(self, file) -> None:
@@ -176,3 +159,26 @@ class XFADS(eqx.Module):
             spec = json.loads(f.readline().decode())
             model = XFADS(**spec)
             return eqx.tree_deserialise_leaves(f, model)
+
+
+@eqx.filter_jit
+def batch_smooth(model, key, t, y, u, dropout):
+    batch_constrain_natural = jax.vmap(jax.vmap(model.hyperparam.approx.constrain_natural))
+    if model.hyperparam.mode == "pseudo":
+        _smooth = jax.vmap(partial(core.filter, model=model))
+        def batch_encode(x) -> Array:
+            a = jax.vmap(jax.vmap(model.obs_encoder))(x)
+            b = batch_constrain_natural(jax.vmap(model.backward_encoder)(a))
+            # a = batch_constrain_natural(a)
+            return b
+    else:
+        _smooth = jax.vmap(partial(core.bismooth, model=model))
+        batch_encode = jax.vmap(jax.vmap(lambda x: model.hyperparam.approx.constrain_natural(model.obs_encoder(x))))
+
+    key, subkey = jrandom.split(key)
+
+    mask, y = batch_dropout(subkey, y, dropout)
+    alpha = batch_encode(y)
+    alpha = mask * alpha
+
+    return _smooth(jrandom.split(key, len(t)), t, alpha, u)

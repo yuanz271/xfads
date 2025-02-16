@@ -1,4 +1,7 @@
+import functools
 import warnings
+
+from jax import random as jrandom
 
 
 class SingletonMeta(type):
@@ -31,3 +34,13 @@ class Registry:
     def get_class(self, name):
         klass = self._registry[name]
         return klass
+
+
+def newkey(func):
+
+    @functools.wraps(func)
+    def wrapper(*args, key, **kwargs):
+        key, subkey = jrandom.split(key)
+        return subkey, func(*args, key=key, **kwargs)
+    
+    return wrapper

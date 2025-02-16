@@ -12,15 +12,15 @@ class AlphaEncoder(eqx.Module):
     approx: Type = eqx.field(static=True)
     layer: eqx.Module
 
-    def __init__(self, state_dim, observation_dim, depth, width, approx, *, key):
+    def __init__(self, state_dim, observation_dim, depth, width, approx, *, key, dropout=None):
         self.approx = approx
         
         self.layer = make_mlp(
-            observation_dim, approx.param_size(state_dim), width, depth, key=key
+            observation_dim, approx.param_size(state_dim), width, depth, key=key, dropout=dropout
         )
     
-    def __call__(self, y):
-        return self.layer(y)
+    def __call__(self, y, *, key=None):
+        return self.layer(y, key=key)
     
 
 class BetaEncoder(eqx.Module):
@@ -30,7 +30,7 @@ class BetaEncoder(eqx.Module):
     output: eqx.Module
     # dropout: eqx.nn.Dropout
 
-    def __init__(self, state_dim, depth, width, approx, *, key):
+    def __init__(self, state_dim, depth, width, approx, *, key, dropout=None):
         self.approx = approx
         
         param_size = approx.param_size(state_dim)

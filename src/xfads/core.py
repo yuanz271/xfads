@@ -31,7 +31,7 @@ def filter(
     alpha: Array,
     u: Array,
     model,
-):
+) -> tuple[Array, Array, Array]:
     """
     :param alpha: obs info
     """
@@ -70,7 +70,7 @@ def bismooth(
     alpha: Array,
     u: Array,
     model,
-):
+) -> tuple[Array, Array, Array]:
     """
     Bidirectional filtering
     Parameterize inverse dynamics

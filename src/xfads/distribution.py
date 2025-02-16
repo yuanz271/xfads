@@ -8,7 +8,7 @@ from typing import Protocol
 from jax import numpy as jnp, random as jrandom
 from jaxtyping import Array, Scalar, PRNGKeyArray
 import tensorflow_probability.substrates.jax.distributions as tfp
-from .nn import make_mlp, softplus
+from .nn import make_mlp
 
 
 EPS = 1e-6
@@ -148,7 +148,7 @@ class FullMVN:
 
         loc, diag, lora = jnp.split(unconstrained, [m, m + m])
         L = jnp.outer(lora, lora)
-        V = jnp.diag(softplus(diag)) + L
+        V = jnp.diag(jnp.square(diag)) + L
         v = V.flatten()
         return jnp.concatenate((loc, v))
 
@@ -161,7 +161,7 @@ class FullMVN:
 
         loc, diag, lora = jnp.split(unconstrained, [m, m + m])
         L = jnp.outer(lora, lora)
-        V = jnp.diag(softplus(diag)) + L
+        V = jnp.diag(jnp.square(diag)) + L
         v = -V.flatten()  # negative definite
         return jnp.concatenate((loc, v))
 
@@ -185,7 +185,7 @@ class LoRaMVN:
 
         loc, diag, lora = jnp.split(unconstrained, [m, m + 1])
         L = jnp.outer(lora, lora)
-        V = softplus(diag) * jnp.eye(m) + L
+        V = jnp.square(diag) * jnp.eye(m) + L
         v = V.flatten()
         return jnp.concatenate((loc, v))
 
@@ -270,13 +270,13 @@ class DiagMVN:
     @classmethod
     def constrain_moment(cls, unconstrained) -> Array:
         loc, v = jnp.split(unconstrained, 2)
-        v = softplus(v)
+        v = jnp.square(v)
         return jnp.concatenate((loc, v))
 
     @classmethod
     def constrain_natural(cls, unconstrained) -> Array:
         loc, v = jnp.split(unconstrained, 2)
-        v = -softplus(v)
+        v = -jnp.square(v)
         return jnp.concatenate((loc, v))
 
     @classmethod

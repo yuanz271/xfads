@@ -12,8 +12,12 @@ from .core import Hyperparam
 
 
 def batch_dropout(key, y, prob) -> Array:
+    """
+    return a key whenever consume a key
+    """
+    key, subkey = jrandom.split(key)
     mask = jrandom.bernoulli(key, 1 - prob, y.shape[:2] + (1,))  # broadcast to the last dimension
-    return mask, mask * y / (1 - prob)
+    return subkey, mask, mask * y / (1 - prob)
 
 
 class XFADS(eqx.Module):
@@ -22,8 +26,8 @@ class XFADS(eqx.Module):
     forward: eqx.Module
     backward: eqx.Module
     likelihood: eqx.Module
-    obs_encoder: eqx.Module
-    backward_encoder: eqx.Module
+    alpha_encoder: eqx.Module
+    beta_encoder: eqx.Module
 
     def __init__(
         self,
@@ -115,10 +119,10 @@ class XFADS(eqx.Module):
         
         #####
         key, subkey = jrandom.split(key)
-        self.obs_encoder = encoders.LocalEncoder(state_dim, observation_dim, approx=approx, key=subkey, **enc_kwargs)
+        self.alpha_encoder = encoders.AlphaEncoder(state_dim, observation_dim, approx=approx, key=subkey, **enc_kwargs)
         
         key, subkey = jrandom.split(key)
-        self.backward_encoder = encoders.BackwardEncoder(state_dim, approx=approx, key=subkey, **enc_kwargs)
+        self.beta_encoder = encoders.BetaEncoder(state_dim, approx=approx, key=subkey, **enc_kwargs)
         #####
 
         dynamics_class = dynamics.get_class(backward_dynamics)
@@ -163,22 +167,37 @@ class XFADS(eqx.Module):
 
 @eqx.filter_jit
 def batch_smooth(model, key, t, y, u, dropout):
+    batch_alpha_encode = jax.vmap(jax.vmap(model.alpha_encoder))
     batch_constrain_natural = jax.vmap(jax.vmap(model.hyperparam.approx.constrain_natural))
+    batch_beta_encode = jax.vmap(model.beta_encoder)
+
     if model.hyperparam.mode == "pseudo":
         _smooth = jax.vmap(partial(core.filter, model=model))
-        def batch_encode(x) -> Array:
-            a = jax.vmap(jax.vmap(model.obs_encoder))(x)
-            b = batch_constrain_natural(jax.vmap(model.backward_encoder)(a))
-            # a = batch_constrain_natural(a)
-            return b
+        def batch_encode(y, key) -> Array:
+            key, mask_a, y = batch_dropout(key, y, dropout)
+
+            a = batch_constrain_natural(batch_alpha_encode(y))
+            a = mask_a * a
+            
+            key, mask_b, a_to_b = batch_dropout(key, a, dropout)
+
+            key, subkey = jrandom.split(key)
+            b = batch_constrain_natural(batch_beta_encode(a_to_b, key=jrandom.split(subkey, jnp.size(a_to_b, 0))))
+            b = mask_b * b
+
+            ab = a + b
+            _, mask_ab, _ = batch_dropout(key, ab, dropout)
+
+            return mask_ab * ab
     else:
         _smooth = jax.vmap(partial(core.bismooth, model=model))
-        batch_encode = jax.vmap(jax.vmap(lambda x: model.hyperparam.approx.constrain_natural(model.obs_encoder(x))))
+        def batch_encode(y, key) -> Array:
+            key, mask_a, y = batch_dropout(key, y, dropout)
 
+            a = batch_constrain_natural(batch_alpha_encode(y))
+            return mask_a * a
+        
     key, subkey = jrandom.split(key)
-
-    mask, y = batch_dropout(subkey, y, dropout)
-    alpha = batch_encode(y)
-    alpha = mask * alpha
+    alpha = batch_encode(y, subkey)
 
     return _smooth(jrandom.split(key, len(t)), t, alpha, u)

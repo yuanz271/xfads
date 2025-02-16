@@ -8,7 +8,7 @@ import equinox as eqx
 from .nn import make_mlp
 
 
-class LocalEncoder(eqx.Module):
+class AlphaEncoder(eqx.Module):
     approx: Type = eqx.field(static=True)
     layer: eqx.Module
 
@@ -23,11 +23,12 @@ class LocalEncoder(eqx.Module):
         return self.layer(y)
     
 
-class BackwardEncoder(eqx.Module):
+class BetaEncoder(eqx.Module):
     approx: Type = eqx.field(static=True)
     h0: Array
     cell: eqx.Module
     output: eqx.Module
+    # dropout: eqx.nn.Dropout
 
     def __init__(self, state_dim, depth, width, approx, *, key):
         self.approx = approx
@@ -44,7 +45,7 @@ class BackwardEncoder(eqx.Module):
         key, subkey = jrandom.split(key)
         self.output = eqx.nn.Linear(width, param_size, key=subkey)
     
-    def __call__(self, a: Float[Array, "t h"]):
+    def __call__(self, a: Float[Array, "t h"], *, key):
         """
         :param a: natural form observation information
         """
@@ -53,4 +54,7 @@ class BackwardEncoder(eqx.Module):
             return h, h
         
         _, hs = jax.lax.scan(step, init=self.h0, xs=a, reverse=True)
-        return jax.vmap(self.output)(hs)
+
+        ab = jax.vmap(self.output)(hs)
+
+        return ab

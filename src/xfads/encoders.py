@@ -28,7 +28,7 @@ class BetaEncoder(eqx.Module):
     h0: Array
     cell: eqx.Module
     output: eqx.Module
-    # dropout: eqx.nn.Dropout
+    dropout: eqx.nn.Dropout | None
 
     def __init__(self, state_dim, depth, width, approx, *, key, dropout=None):
         self.approx = approx
@@ -44,6 +44,9 @@ class BetaEncoder(eqx.Module):
 
         key, subkey = jrandom.split(key)
         self.output = eqx.nn.Linear(width, param_size, key=subkey)
+
+        if dropout is not None:
+            self.dropout = eqx.nn.Dropout(dropout)
     
     def __call__(self, a: Float[Array, "t h"], *, key):
         """
@@ -54,6 +57,9 @@ class BetaEncoder(eqx.Module):
             return h, h
         
         _, hs = jax.lax.scan(step, init=self.h0, xs=a, reverse=True)
+
+        if self.dropout is not None:
+            hs = self.dropout(hs, key=key)
 
         ab = jax.vmap(self.output)(hs)
 

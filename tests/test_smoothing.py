@@ -1,7 +1,7 @@
 from jax import numpy as jnp, random as jrandom
 
 import xfads
-from xfads.dynamics import GaussianStateNoise, Nonlinear
+from xfads.dynamics import DiagNoise, Nonlinear
 from xfads.distribution import DiagMVN, FullMVN, LoRaMVN
 from xfads.smoothing import smooth
 from xfads.smoothing import Hyperparam
@@ -30,7 +30,7 @@ def test_smooth(spec, capsys):
     u = jrandom.normal(ukey, shape=(T, input_dim))
 
     hyperparam = Hyperparam(approx, state_dim, input_dim, observation_dim, covariate_dim=spec['covariate_dim'], mc_size=spec['mc_size'])
-    statenoise = GaussianStateNoise(jnp.ones(state_dim))
+    statenoise = DiagNoise(jnp.ones(state_dim))
     
     with capsys.disabled():
         print(approx)

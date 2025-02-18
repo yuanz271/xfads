@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 from functools import partial
 
+from jax.sharding import PartitionSpec as P
+from jax.experimental import mesh_utils
+from jax.experimental.shard_map import shard_map
 import numpy as np
 import jax
 from jax import numpy as jnp, random as jrandom
@@ -34,7 +37,7 @@ class Stopping:
         self.min_epoch = min_epoch
         self.patience = patience
         self._losses = [np.inf]
-        
+
     def should_stop(self, loss: float) -> bool:
         stop = False
         if np.isfinite(loss):
@@ -42,14 +45,16 @@ class Stopping:
 
         if len(self._losses) < self.min_epoch:
             return False
-        
-        average_improvement = -np.mean(np.diff(self._losses[-max(self.patience + 1, 2):]))
+
+        average_improvement = -np.mean(
+            np.diff(self._losses[-max(self.patience + 1, 2) :])
+        )
 
         if average_improvement < self.min_improvement:
             stop = True
 
         return stop
-    
+
 
 def make_optimizer(model, opt: Opt):
     # optimizer = optax.chain(
@@ -156,13 +161,14 @@ def train(
         zt = eqx.filter_vmap(eqx.filter_vmap(model.forward))(ztm1, u)
         return zt
 
-    @eqx.filter_jit
     def batch_loss(model, key, tb, yb, ub, wb) -> Scalar:
         key, subkey = jrandom.split(key)
         chex.assert_equal_shape((tb, yb, ub), dims=(0, 1))
 
         key, subkey = jrandom.split(key)
-        _, moment, moment_p = smoother.batch_smooth(model, subkey, tb, yb, ub, opt.dropout)
+        _, moment, moment_p = smoother.batch_smooth(
+            model, subkey, tb, yb, ub, opt.dropout
+        )
 
         key, subkey = jrandom.split(key)
         zb = batch_sample(subkey, moment, model.hyperparam.approx)
@@ -174,13 +180,13 @@ def train(
         free_energy = -batch_elbo(model, subkey, tb, moment, moment_p, yb)
 
         chex.assert_equal_shape((free_energy, wb))
-        
+
         loss = (
             jnp.mean(free_energy * wb)
             + model.hyperparam.fb_penalty * fb_loss
             + model.hyperparam.noise_penalty * model.forward.loss()
             # + hyperparam.noise_penalty * model.backward.loss()
-        )  
+        )
 
         return loss
 
@@ -188,15 +194,43 @@ def train(
         rng = np.random.default_rng(seed)
         key = jrandom.key(seed)
 
+        n_devices = len(jax.devices())
+
         n: int = np.size(data[0], 0)
         perm = rng.permutation(n)
-        n_valid = int(n * opt.valid_ratio)
-        indices_valid, indices_training = perm[:n_valid], perm[n_valid:]
+        n_samples_per_device = int(n * opt.valid_ratio / n_devices)
+        n_valid = n_samples_per_device * n_devices  # n_devices-dividible for sharding
 
+        indices_valid, indices_training = perm[:n_valid], perm[n_valid:]
         valid_set = tuple(arr[indices_valid] for arr in data)
         training_set = tuple(arr[indices_training] for arr in data)
 
+        mesh = jax.make_mesh((n_devices,), ("batch",))
+
         optimizer, opt_state = make_optimizer(model, opt)
+        
+        @eqx.filter_jit
+        def evaluate(model, key, data):
+            return shard_map(
+                lambda *d: batch_loss(model, key, *d),
+                mesh,
+                in_specs=(
+                    P(
+                        "batch", None
+                    ),
+                    P(
+                        "batch", None, None
+                    ),
+                    P(
+                        "batch", None, None
+                    ),
+                    P(
+                        "batch", None
+                    ),
+                ),
+                out_specs=P(),
+                check_rep=False,
+            )(*data)
 
         @eqx.filter_value_and_grad
         def loss_func(model, key, *data) -> Scalar:
@@ -220,9 +254,9 @@ def train(
                 # epoch_loss = 0.
                 try:
                     epoch_key, loader_key = jrandom.split(epoch_key)
-                    for j, batch in enumerate(data_loader(
-                        *training_set, batch_size=batch_size, rng=rng
-                    )):
+                    for j, batch in enumerate(
+                        data_loader(*training_set, batch_size=batch_size, rng=rng)
+                    ):
                         batch_key = jrandom.fold_in(epoch_key, j)
                         model, opt_state, loss = step(
                             model, batch_key, opt_state, *batch
@@ -230,9 +264,9 @@ def train(
                         # epoch_loss += loss.item()
                 except KeyboardInterrupt:
                     terminate = True
-                
+
                 _, subkey = jrandom.split(epoch_key)
-                epoch_loss = batch_loss_func(model, subkey, *valid_set).item()
+                epoch_loss = evaluate(model, subkey, valid_set).item()
                 # epoch_loss /= j+1
                 pbar.set_postfix({"loss": f"{epoch_loss:.3f}"})
 

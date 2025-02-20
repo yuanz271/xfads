@@ -184,3 +184,45 @@ class RBFN(Module):
             x, self.centers, softplus(self.scale)
         )
         return self.readout(kernels)
+
+
+class DataMask(Module, strict=True):
+    p: float
+    inference: bool
+
+    def __init__(
+        self,
+        p: float = 0.5,
+        inference: bool = False,
+    ):
+
+        self.p = p
+        self.inference = inference
+
+    @jax.named_scope("xfads.nn.DataMask")
+    def __call__(
+        self,
+        x: Array,
+        *,
+        key: PRNGKeyArray | None = None,
+        inference: bool | None = None,
+    ) -> Array:
+        
+        if inference is None:
+            inference = self.inference
+
+        if isinstance(self.p, (int, float)) and self.p == 0:
+            inference = True
+        
+        shape = x.shape[:2] + (1,)  # broadcast to the last dimension
+        if inference:
+            return key, jnp.ones(shape)
+        elif key is None:
+            raise RuntimeError(
+                f"{self.__name__} requires a key when running in non-deterministic mode."
+            )
+        else:
+            key, subkey = jrandom.split(key)
+            q  = 1 - jax.lax.stop_gradient(self.p)
+            mask = jrandom.bernoulli(key, q, shape) 
+            return subkey, mask

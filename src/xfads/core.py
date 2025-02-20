@@ -9,17 +9,16 @@ from jax import numpy as jnp, random as jrandom
 from jax.lax import scan
 
 from .dynamics import sample_expected_moment
-from .distribution import MVN
 
 
 @dataclass
 class Hyperparam:
-    approx: Type[MVN]
+    approx: Type
     state_dim: int
     input_dim: int
     observation_dim: int
-    covariate_dim: int
-    mc_size: int
+    covariate_dim: int = 0
+    mc_size: int = 1
     fb_penalty: float = 0.
     noise_penalty: float = 0.
     mode: str = "pseudo"
@@ -37,7 +36,7 @@ def filter(
     """
     approx = model.hyperparam.approx
     nature_p_1 = approx.prior_natural(model.hyperparam.state_dim)  # TODO: where should prior belongs, approx or dynamics?
-
+    
     expected_moment_forward = partial(sample_expected_moment, f=model.forward, noise=model.forward, approx=approx, mc_size=model.hyperparam.mc_size)
 
     nature_f_1 = nature_p_1 + alpha[0]
@@ -52,7 +51,7 @@ def filter(
         nature_t = nature_p_t + a_t
         return (key, nature_t), (moment_p_t, nature_p_t, nature_t)
 
-    key, subkey = jrandom.split(key, 2)
+    key, subkey = jrandom.split(key)
     _, (moment_p, _, nature_f) = scan(
         partial(ff, expected_moment=expected_moment_forward), init=(subkey, nature_f_1), xs=(alpha[1:], u[:-1])  # t = 2 ... T+1
     )

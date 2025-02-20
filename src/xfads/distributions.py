@@ -3,15 +3,22 @@ Exponential-family variational distributions
 """
 
 import math
-from typing import Protocol
+from typing import Protocol, Type
 
+import jax
 from jax import numpy as jnp, random as jrandom
 from jaxtyping import Array, Scalar, PRNGKeyArray
 import tensorflow_probability.substrates.jax.distributions as tfp
-from .nn import make_mlp
+
+from .helper import Registry
 
 
 EPS = 1e-6
+registry = Registry()
+
+
+def get_class(name) -> Type:
+    return registry.get_class(name)
 
 
 def _inv(a):
@@ -58,6 +65,7 @@ class MVN(Protocol):
     def noise_moment(cls, noise_cov) -> Array: ...
 
 
+@registry.register()
 class FullMVN:
     @classmethod
     def natural_to_moment(cls, natural: Array) -> Array:
@@ -166,16 +174,11 @@ class FullMVN:
         return jnp.concatenate((loc, v))
 
     @classmethod
-    def get_encoder(cls, observation_dim, state_dim, depth, width, key) -> tuple:
-        unconstrained_size = state_dim + state_dim + state_dim
-        obs_enc = make_mlp(observation_dim, unconstrained_size, width, depth, key=key)
-        return obs_enc
-
-    @classmethod
     def noise_moment(cls, noise_cov) -> Array:
         return jnp.diag(noise_cov)
 
 
+@registry.register()
 class LoRaMVN:
     @classmethod
     def constrain_moment(cls, unconstrained: Array) -> Array:
@@ -190,16 +193,11 @@ class LoRaMVN:
         return jnp.concatenate((loc, v))
 
     @classmethod
-    def get_encoder(cls, observation_dim, state_dim, depth, width, key) -> tuple:
-        unconstrained_size = state_dim + 1 + state_dim
-        obs_enc = make_mlp(observation_dim, unconstrained_size, width, depth, key=key)
-        return obs_enc
-
-    @classmethod
     def noise_moment(cls, noise_cov) -> Array:
         return jnp.diag(noise_cov)
 
 
+@registry.register()
 class DiagMVN:
     @classmethod
     def natural_to_moment(cls, natural) -> Array:
@@ -278,15 +276,6 @@ class DiagMVN:
         loc, v = jnp.split(unconstrained, 2)
         v = -jnp.square(v)
         return jnp.concatenate((loc, v))
-
-    @classmethod
-    def get_encoder(
-        cls, observation_dim, state_dim, input_dim, width, depth, key
-    ) -> tuple:
-        obs_enc = make_mlp(
-            observation_dim, cls.param_size(state_dim), width, depth, key=key
-        )
-        return obs_enc
 
     @classmethod
     def noise_moment(cls, noise_cov) -> Array:

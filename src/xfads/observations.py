@@ -8,7 +8,7 @@ import chex
 import equinox as eqx
 
 from .nn import softplus, softplus_inverse, VariantBiasLinear, StationaryLinear
-from .distribution import MVN
+from .distributions import MVN
 from .helper import Registry
 
 

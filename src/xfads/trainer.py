@@ -25,18 +25,17 @@ class Opt:
     batch_size: int = 1
     weight_decay: float = 1e-3
     seed: int = 0
-    dropout: float = 0.0
     noise_eta: float = 0.5
     noise_gamma: float = 0.8
     valid_ratio: float = 0.2
 
 
 class Stopping:
-    def __init__(self, min_improvement=0, min_epoch=0, patience=1):
+    def __init__(self, ref, min_improvement=0, min_epoch=0, patience=1):
         self.min_improvement = min_improvement
         self.min_epoch = min_epoch
         self.patience = patience
-        self._losses = [np.inf]
+        self._losses = [ref]
 
     def should_stop(self, loss: float) -> bool:
         stop = False
@@ -100,7 +99,7 @@ def data_loader(
     perm = rng.permutation(n)
     start = 0
     end = batch_size
-    while end <= n:
+    while end <= n and start < n:
         batch_perm = perm[start:end]
         yield tuple(arr[batch_perm] for arr in arrays)  # move minibatch to GPU
         start = end
@@ -151,14 +150,16 @@ def train(
 
         return ret
 
-    def batch_fb_predict(model, z, u):
-        ztp1 = eqx.filter_vmap(eqx.filter_vmap(model.forward))(z, u)
-        zt = eqx.filter_vmap(eqx.filter_vmap(model.backward))(ztp1, u)
+    def batch_fb_predict(model, z, u, *, key):
+        fkey, bkey = jrandom.split(key) 
+        ztp1 = eqx.filter_vmap(eqx.filter_vmap(model.forward))(z, u, key=jrandom.split(fkey, z.shape[:2]))
+        zt = eqx.filter_vmap(eqx.filter_vmap(model.backward))(ztp1, u, key=jrandom.split(bkey, z.shape[:2]))
         return zt
 
-    def batch_bf_predict(model, z, u):
-        ztm1 = eqx.filter_vmap(eqx.filter_vmap(model.backward))(z, u)
-        zt = eqx.filter_vmap(eqx.filter_vmap(model.forward))(ztm1, u)
+    def batch_bf_predict(model, z, u, *, key):
+        fkey, bkey = jrandom.split(key) 
+        ztm1 = eqx.filter_vmap(eqx.filter_vmap(model.backward))(z, u, key=jrandom.split(bkey, z.shape[:2]))
+        zt = eqx.filter_vmap(eqx.filter_vmap(model.forward))(ztm1, u, key=jrandom.split(fkey, z.shape[:2]))
         return zt
 
     def batch_loss(model, key, tb, yb, ub, wb) -> Scalar:
@@ -166,15 +167,16 @@ def train(
         chex.assert_equal_shape((tb, yb, ub), dims=(0, 1))
 
         key, subkey = jrandom.split(key)
-        _, moment, moment_p = smoother.batch_smooth(
-            model, subkey, tb, yb, ub, opt.dropout
-        )
-
-        key, subkey = jrandom.split(key)
-        zb = batch_sample(subkey, moment, model.hyperparam.approx)
-        zb_hat_fb = batch_fb_predict(model, zb, ub)
-        zb_hat_bf = batch_bf_predict(model, zb, ub)
-        fb_loss = jnp.mean((zb_hat_fb - zb_hat_bf) ** 2)
+        _, moment, moment_p = model(tb, yb, ub, key=subkey)
+        
+        if model.hyperparam.mode == "bi":
+            key, skey, fbkey, bfkey = jrandom.split(key, 4)
+            zb = batch_sample(skey, moment, model.hyperparam.approx)
+            zb_hat_fb = batch_fb_predict(model, zb, ub, key=fbkey)
+            zb_hat_bf = batch_bf_predict(model, zb, ub, key=bfkey)
+            fb_loss = jnp.mean((zb_hat_fb - zb_hat_bf) ** 2)
+        else:
+            fb_loss = 0.
 
         key, subkey = jrandom.split(key)
         free_energy = -batch_elbo(model, subkey, tb, moment, moment_p, yb)
@@ -211,6 +213,7 @@ def train(
         
         @eqx.filter_jit
         def evaluate(model, key, data):
+            model = eqx.nn.inference_mode(model)
             return shard_map(
                 lambda *d: batch_loss(model, key, *d),
                 mesh,
@@ -242,16 +245,15 @@ def train(
             updates, opt_state = optimizer.update(grads, opt_state, model)
             model = eqx.apply_updates(model, updates)
             return model, opt_state, loss
-
-        old_loss = jnp.inf
+        
+        key, eval_key = jrandom.split(key)
         terminate = False
         batch_size = opt.batch_size
-        stopping = Stopping(0, opt.min_iter, 10)
+        stopping = Stopping(evaluate(model, eval_key, valid_set).item(), 0, opt.min_iter, 10)
 
         with trange(opt.max_iter) as pbar:
             for i in pbar:
                 epoch_key: Array = jrandom.fold_in(key, i)
-                # epoch_loss = 0.
                 try:
                     epoch_key, loader_key = jrandom.split(epoch_key)
                     for j, batch in enumerate(
@@ -261,7 +263,6 @@ def train(
                         model, opt_state, loss = step(
                             model, batch_key, opt_state, *batch
                         )
-                        # epoch_loss += loss.item()
                 except KeyboardInterrupt:
                     terminate = True
 
@@ -272,13 +273,8 @@ def train(
 
                 chex.assert_tree_all_finite(epoch_loss)
 
-                if terminate:
+                if terminate or stopping.should_stop(epoch_loss):
                     break
-
-                if stopping.should_stop(epoch_loss):
-                    break
-
-                old_loss = epoch_loss
 
             return model, epoch_loss
 

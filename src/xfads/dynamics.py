@@ -8,25 +8,25 @@ import equinox as eqx
 
 from .helper import Registry
 from .nn import softplus, softplus_inverse
-from .distribution import MVN
+from .distributions import MVN
 
 
 registry = Registry()
-
-
-class Noise(Protocol):
-    def cov(self): ...
 
 
 def get_class(name) -> Type:
     return registry.get_class(name)
 
 
+class Noise(Protocol):
+    def cov(self): ...
+
+
 def predict_moment(
-    z: Array, u: Array, f, noise: Noise, approx: Type[MVN]
+    z: Array, u: Array, f, noise: Noise, approx: Type[MVN], *, key=None
 ) -> Array:
     """mu[t](z[t-1])"""
-    ztp1 = f(z, u)
+    ztp1 = f(z, u, key=key)
     M2 = approx.noise_moment(noise.cov())
     # match approx():
     #     case DiagMVN():
@@ -51,17 +51,18 @@ def sample_expected_moment(
     mc_size: int,
 ) -> Array:
     """E[mu[t](z[t-1])]"""
-    z = approx.sample_by_moment(key, moment, mc_size)
+    key, subkey = jrandom.split(key)
+    z = approx.sample_by_moment(subkey, moment, mc_size)
     u_shape = (mc_size,) + u.shape
     u = jnp.broadcast_to(u, shape=u_shape)
     f_vmap_sample_axis = jax.vmap(
-        partial(predict_moment, f=f, noise=noise, approx=approx), in_axes=(0, 0)
+        partial(predict_moment, f=f, noise=noise, approx=approx, key=key), in_axes=(0, 0)
     )
     moment = jnp.mean(f_vmap_sample_axis(z, u), axis=0)
     return moment
 
 
-class DiagGaussian(eqx.Module):
+class DiagGaussian(eqx.Module, strict=True):
     unconstrained_cov: Array
     
     def __init__(self, cov, size):
@@ -82,25 +83,25 @@ class AbstractDynamics(eqx.Module):
         return 0.
 
 
-@registry.register()
-class Diffusion(AbstractDynamics):
-    unconstrained_cov: Array
+# @registry.register()
+# class Diffusion(AbstractDynamics):
+#     unconstrained_cov: Array
 
-    def __init__(
-        self,
-        state_dim: int,
-        input_dim: int,
-        width: int,
-        depth: int,
-        cov,
-        *,
-        key: PRNGKeyArray,
-        **kwargs,
-    ):
-        self.unconstrained_cov = jnp.full(state_dim, fill_value=jax.scipy.special.logit(cov))
+#     def __init__(
+#         self,
+#         state_dim: int,
+#         input_dim: int,
+#         width: int,
+#         depth: int,
+#         cov,
+#         *,
+#         key: PRNGKeyArray,
+#         **kwargs,
+#     ):
+#         self.unconstrained_cov = jnp.full(state_dim, fill_value=jax.scipy.special.logit(cov))
 
-    def __call__(self, z: Array, u: Array) -> Array:
-        return jnp.sqrt(1 - self.cov()) * z
+#     def __call__(self, z: Array, u: Array) -> Array:
+#         return jnp.sqrt(1 - self.cov()) * z
 
-    def cov(self) -> Array:
-        return jnn.sigmoid(self.unconstrained_cov)
+#     def cov(self) -> Array:
+#         return jnn.sigmoid(self.unconstrained_cov)

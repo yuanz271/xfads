@@ -1,8 +1,8 @@
 from jax import numpy as jnp, random as jrnd
 import chex
-from xfads.distribution import MVN
+from xfads.distributions import MVN
 
-from xfads.dynamics import Nonlinear, predict_moment, sample_expected_moment, GaussianStateNoise
+from xfads.dynamics import Nonlinear, predict_moment, sample_expected_moment, DiagNoise
 
 
 def test_nonlinear(spec):
@@ -23,7 +23,7 @@ def test_predict_moment(spec):
     input_dim = spec['input_dim']
 
     f = Nonlinear(state_dim, input_dim, key=key, kwargs=spec['dyn_spec'])
-    noise = GaussianStateNoise(jnp.eye(state_dim))
+    noise = DiagNoise(jnp.eye(state_dim))
 
     z = jrnd.normal(key, (state_dim,))
     u = jrnd.normal(key, (input_dim,))
@@ -38,7 +38,7 @@ def test_sample_expected_moment(spec):
     input_dim = spec['input_dim']
 
     f = Nonlinear(state_dim, input_dim, key=key, kwargs=spec['dyn_spec'])
-    noise = GaussianStateNoise(jnp.eye(state_dim))
+    noise = DiagNoise(jnp.eye(state_dim))
 
     z = jrnd.normal(key, (state_dim,))
     u = jrnd.normal(key, (input_dim,))

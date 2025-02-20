@@ -2,7 +2,7 @@ from jax import numpy as jnp, random as jrandom
 import chex
 import tensorflow_probability.substrates.jax.distributions as tfp
 
-from xfads.distribution import MVN, DiagMVN
+from xfads.distributions import MVN, DiagMVN
 
 
 # def test_mvn(spec):

@@ -2,7 +2,7 @@ from typing import Callable, Type
 
 from jaxtyping import Array, PRNGKeyArray, Scalar
 
-from .distribution import MVN
+from .distributions import MVN
 
 
 def elbo(key: PRNGKeyArray, t: Array, moment: Array, moment_p: Array, y: Array, eloglik: Callable[..., Scalar], approx: Type[MVN], *, mc_size: int) -> Scalar:

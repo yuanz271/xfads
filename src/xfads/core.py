@@ -1,14 +1,20 @@
-
 from dataclasses import dataclass
+from enum import auto, StrEnum
 from functools import partial
 from typing import Type
 
-from jaxtyping import Array, PRNGKeyArray
 import jax
 from jax import numpy as jnp, random as jrandom
 from jax.lax import scan
+from jaxtyping import Array, PRNGKeyArray
 
+from . import distributions
 from .dynamics import sample_expected_moment
+
+
+class Mode(StrEnum):
+    PSEUDO = auto()
+    BIFILTER = auto()
 
 
 @dataclass
@@ -17,11 +23,11 @@ class Hyperparam:
     state_dim: int
     input_dim: int
     observation_dim: int
-    covariate_dim: int = 0
-    mc_size: int = 1
-    fb_penalty: float = 0.
-    noise_penalty: float = 0.
-    mode: str = "pseudo"
+    # covariate_dim: int
+    mc_size: int
+    fb_penalty: float
+    noise_penalty: float
+    mode: str
 
 
 def filter(
@@ -32,10 +38,10 @@ def filter(
     model,
 ) -> tuple[Array, Array, Array]:
     """
-    :param alpha: obs info
+    :param alpha:
     """
     approx = model.hyperparam.approx
-    nature_p_1 = approx.prior_natural(model.hyperparam.state_dim)  # TODO: where should prior belongs, approx or dynamics?
+    nature_p_1 = model.prior_natural()  # TODO: where should prior belongs, approx or dynamics?
     
     expected_moment_forward = partial(sample_expected_moment, f=model.forward, noise=model.forward, approx=approx, mc_size=model.hyperparam.mc_size)
 
@@ -82,7 +88,7 @@ def bismooth(
     """
     hyperparam = model.hyperparam
     approx = hyperparam.approx
-    nature_prior = approx.prior_natural(hyperparam.state_dim)
+    nature_prior = model.prior_natural()
 
     natural_to_moment = jax.vmap(approx.natural_to_moment)
     expected_moment_forward = partial(sample_expected_moment, f=model.forward, noise=model.forward, approx=approx, mc_size=hyperparam.mc_size)

@@ -8,8 +8,8 @@ from jax import numpy as jnp, random as jrandom
 import equinox as eqx
 import chex
 
-from . import core, distributions, dynamics, observations, spec, encoders
-from .core import Hyperparam
+from . import core, distributions, dynamics, observations, encoders
+from .core import Hyperparam, Mode
 
 
 class DataMasker(eqx.Module, strict=True):
@@ -63,6 +63,7 @@ class XFADS(eqx.Module, strict=True):
     alpha_encoder: eqx.Module
     beta_encoder: eqx.Module
     masker: eqx.Module
+    unconstrained_prior_natural: Array
 
     def __init__(
         self,
@@ -71,56 +72,47 @@ class XFADS(eqx.Module, strict=True):
         input_dim,
         state_noise,
         *,
-        mode: str = "pseudo",
-        forward_dynamics: str = "Nonlinear",
-        backward_dynamics: str = "Nonlinear",
-        approx: str = "DiagMVN",
-        observation: str = "Poisson",
-        n_steps: int = 0,
-        mc_size: int = 1,
-        random_state: int = 0,
-        static_params: str = "",
-        fb_penalty: float = 0.0,
-        noise_penalty: float = 0.0,
-        dyn_kwargs=None,
-        obs_kwargs=None,
-        enc_kwargs=None,
-        dropout: float| None = None,
+        mode: str,
+        forward_dynamics: str,
+        backward_dynamics: str,
+        approx: str,
+        observation: str,
+        n_steps: int,
+        mc_size: int,
+        seed: int,
+        fb_penalty: float,
+        noise_penalty: float,
+        dropout: float| None,
+        dyn_kwargs: dict,
+        obs_kwargs: dict,
+        enc_kwargs: dict,
     ) -> None:
-        key = jrandom.key(random_state) 
-
-        if dyn_kwargs is None:
-            dyn_kwargs = {}
-
-        if obs_kwargs is None:
-            obs_kwargs = {}
-
-        if enc_kwargs is None:
-            enc_kwargs = {}
-
-        self.spec: spec.ModelSpec = dict(
-            mode=mode,
+        self.spec = dict(
             observation_dim=observation_dim,
             state_dim=state_dim,
             input_dim=input_dim,
             state_noise=state_noise,
+            mode=mode,
             forward_dynamics=forward_dynamics,
             backward_dynamics=backward_dynamics,
             approx=approx,
             observation=observation,
             n_steps=n_steps,
             mc_size=mc_size,
-            random_state=random_state,
-            static_params=static_params,
+            seed=seed,
             fb_penalty=fb_penalty,
             noise_penalty=noise_penalty,
+            dropout=dropout,
             dyn_kwargs=dyn_kwargs,
             obs_kwargs=obs_kwargs,
             enc_kwargs=enc_kwargs,
         )
+
+        key = jrandom.key(seed) 
+
         self.masker: DataMasker = DataMasker(dropout)
 
-        approx: Type = distributions.get_class(approx)
+        approx: Type[distributions.Approx] = distributions.get_class(approx)
 
         self.hyperparam = Hyperparam(
             approx=approx,
@@ -133,22 +125,35 @@ class XFADS(eqx.Module, strict=True):
             mode=mode,
         )
 
-        key, fkey, bkey, rkey = jrandom.split(key, 4)
-
         dynamics_class = dynamics.get_class(forward_dynamics)
+        key, subkey = jrandom.split(key)
         self.forward = dynamics_class(
-            key=fkey,
+            key=subkey,
             state_dim=state_dim,
             input_dim=input_dim,
             cov=state_noise,
             **dyn_kwargs,
         )
+        
+        if backward_dynamics is not None:
+            dynamics_class = dynamics.get_class(backward_dynamics)
+            key, subkey = jrandom.split(key)
+            self.backward = dynamics_class(
+                key=subkey,
+                state_dim=state_dim,
+                input_dim=input_dim,
+                cov=state_noise,
+                **dyn_kwargs,
+            )
+        else:
+            self.backward = None
 
         observation_class = observations.get_class(observation)
+        key, subkey = jrandom.split(key)
         self.likelihood = observation_class(
             state_dim,
             observation_dim,
-            key=rkey,
+            key=subkey,
             n_steps=n_steps,
             **obs_kwargs,
         )
@@ -161,31 +166,20 @@ class XFADS(eqx.Module, strict=True):
         self.beta_encoder = encoders.BetaEncoder(state_dim, approx=approx, key=subkey, **enc_kwargs)
         #####
 
-        dynamics_class = dynamics.get_class(backward_dynamics)
-        self.backward = dynamics_class(
-            key=bkey,
-            state_dim=state_dim,
-            input_dim=input_dim,
-            cov=state_noise,
-            **dyn_kwargs,
-        )
+        # if "l" in static_params:
+        #     self.likelihood.set_static()
+        # if "s" in static_params:
+        #     self.forward.set_static()
 
-        if "l" in static_params:
-            self.likelihood.set_static()
-        if "s" in static_params:
-            self.forward.set_static()
+        self.unconstrained_prior_natural = approx.unconstrain_natural(approx.prior_natural(state_dim))
     
-    def init(self, data: tuple):
-        T, Y, U = data
-        mean_y = jnp.mean(Y, axis=0)
+    def init(self, t, y, u):
+        mean_y = jnp.mean(y, axis=0)
         biases = jnp.log(jnp.maximum(mean_y, 1e-6))
         return eqx.tree_at(lambda model: model.likelihood.readout.biases, self, biases)
-
-    # def transform(
-    #     self, data, *, key: Array
-    # ) -> tuple[Array, Array]:
-    #     _, moment_s, moment_p = batch_smooth(self, key, *data, 0.)
-    #     return moment_s, moment_p
+    
+    def prior_natural(self) -> Array:
+        return self.hyperparam.approx.constrain_natural(self.unconstrained_prior_natural)
 
     def save_model(self, file) -> None:
         with open(file, "wb") as f:
@@ -194,7 +188,7 @@ class XFADS(eqx.Module, strict=True):
             eqx.tree_serialise_leaves(f, self)
 
     @classmethod
-    def load_model(cls, file) -> Self:
+    def load_model(cls, file):
         with open(file, "rb") as f:
             spec = json.loads(f.readline().decode())
             model = XFADS(**spec)
@@ -206,94 +200,49 @@ class XFADS(eqx.Module, strict=True):
         batch_constrain_natural: Callable = jax.vmap(jax.vmap(self.hyperparam.approx.constrain_natural))
         batch_beta_encode: Callable = jax.vmap(self.beta_encoder)
 
-        if self.hyperparam.mode == "pseudo":
-            batch_smooth = jax.vmap(partial(core.filter, model=self))
-            def batch_encode(y, key) -> Array:
-                # handling missing values
-                mask_y = jnp.all(jnp.isfinite(y), axis=2, keepdims=True)  # nonfinite are missing values
-                # chex.assert_equal_shape((y, mask_y), dims=(0, 1))
-                y = jnp.where(mask_y, y, 0)
+        match self.hyperparam.mode:
+            case Mode.BIFILTER:
+                batch_smooth = jax.vmap(partial(core.bismooth, model=self))
+                def batch_encode(y, key) -> Array:
+                    mask_y = jnp.all(jnp.isfinite(y), axis=2, keepdims=True)  # nonfinite are missing values
+                    # chex.assert_equal_shape((y, valid_mask), dims=(0,1))
+                    y = jnp.where(mask_y, y, 0)
+
+                    key, subkey = jrandom.split(key)
+                    a = batch_constrain_natural(batch_alpha_encode(y, key=jrandom.split(subkey, y.shape[:2])))
+                    a = jnp.where(mask_y, a, 0)
+
+                    key, mask_a= self.masker(a, key=key)
+                    a = jnp.where(mask_a, a, 0)
+
+                    return a
+            case _:
+                batch_smooth = jax.vmap(partial(core.filter, model=self))
+                def batch_encode(y, key) -> Array:
+                    # handling missing values
+                    mask_y = jnp.all(jnp.isfinite(y), axis=2, keepdims=True)  # nonfinite are missing values
+                    # chex.assert_equal_shape((y, mask_y), dims=(0, 1))
+                    y = jnp.where(mask_y, y, 0)
+                    
+                    key, subkey = jrandom.split(key)
+                    a = batch_constrain_natural(batch_alpha_encode(y, key=jrandom.split(subkey, y.shape[:2])))
+                    a = jnp.where(mask_y, a, 0)  # miss_values have no updates to state
+
+                    key, mask_a = self.masker(y, key=key)
+                    a = jnp.where(mask_a, a, 0)  # pseudo missing values
+        
+                    b = batch_constrain_natural(batch_beta_encode(a, key=jrandom.split(key, a.shape[0])))
+                    key, mask_b = self.masker(y, key=key)
+                    b = jnp.where(mask_b, b, 0)  # filter only steps
+
+                    ab = a + b
+
+                    # key, mask_ab = self.masker(y, key=key)
+                    # ab = jnp.where(mask_ab, ab, 0)
+
+                    return ab
                 
-                key, subkey = jrandom.split(key)
-                a = batch_constrain_natural(batch_alpha_encode(y, key=jrandom.split(subkey, y.shape[:2])))
-                a = jnp.where(mask_y, a, 0)  # miss_values have no updates to state
-
-                key, mask_a = self.masker(y, key=key)
-                a = jnp.where(mask_a, a, 0)  # pseudo missing values
-     
-                b = batch_constrain_natural(batch_beta_encode(a, key=jrandom.split(key, a.shape[0])))
-                key, mask_b = self.masker(y, key=key)
-                b = jnp.where(mask_b, b, 0)  # filter only steps
-
-                ab = a + b
-
-                # key, mask_ab = self.masker(y, key=key)
-                # ab = jnp.where(mask_ab, ab, 0)
-
-                return ab
-        else:
-            batch_smooth = jax.vmap(partial(core.bismooth, model=self))
-            def batch_encode(y, key) -> Array:
-                mask_y = jnp.all(jnp.isfinite(y), axis=2, keepdims=True)  # nonfinite are missing values
-                # chex.assert_equal_shape((y, valid_mask), dims=(0,1))
-                y = jnp.where(mask_y, y, 0)
-                a = batch_constrain_natural(batch_alpha_encode(y))
-                a = jnp.where(mask_y, a, 0)
-                key, mask_a= self.masker(a, key=key)
-
-                return jnp.where(mask_a, a, 0)
-            
         key, subkey = jrandom.split(key)
         alpha = batch_encode(y, subkey)
 
         return batch_smooth(jrandom.split(key, len(t)), t, alpha, u)
-
-
-# @eqx.filter_jit
-# def batch_smooth(model, t, y, u, *, key) -> tuple[Array, Array, Array]:
-#     batch_alpha_encode = jax.vmap(jax.vmap(model.alpha_encoder))
-#     batch_constrain_natural = jax.vmap(jax.vmap(model.hyperparam.approx.constrain_natural))
-#     batch_beta_encode = jax.vmap(model.beta_encoder)
-
-#     if model.hyperparam.mode == "pseudo":
-#         _smooth = jax.vmap(partial(core.filter, model=model))
-#         def batch_encode(y, key) -> Array:
-#             mask_y = jnp.all(jnp.isfinite(y), axis=2, keepdims=True)  # nonfinite are missing values
-#             chex.assert_equal_shape((y, mask_y), dims=(0,1))
-#             y = jnp.where(mask_y, y, 0)
-
-#             key, mask_a = model.masker(y, key=key)
-#             key, mask_b = model.masker(y, key=key)
-#             key, mask_ab = model.masker(y, key=key)
-
-#             key, subkey = jrandom.split(key)
-#             a = batch_constrain_natural(batch_alpha_encode(y, key=jrandom.split(subkey, y.shape[:2])))
-#             a = jnp.where(mask_y, a, 0)  # miss_values have no updates to state
-#             a = jnp.where(mask_a, a, 0)  # skip random bins
-            
-#             key, subkey = jrandom.split(key)
-#             b = batch_constrain_natural(batch_beta_encode(a, key=jrandom.split(subkey, jnp.size(a, 0))))
-#             b = jnp.where(mask_b, b, 0)
-
-#             ab = a + b
-#             ab = jnp.where(mask_ab, ab, 0)
-
-#             return ab
-#     else:
-#         _smooth = jax.vmap(partial(core.bismooth, model=model))
-#         def batch_encode(y, key) -> Array:
-#             valid_mask = jnp.all(jnp.isfinite(y), axis=2, keepdims=True)  # nonfinite are missing values
-#             chex.assert_equal_shape((y, valid_mask), dims=(0,1))
-#             y = jnp.where(valid_mask, y, 0)
-            
-#             key, mask_a, _ = model.masker(y, key=key)
-
-#             a = batch_constrain_natural(batch_alpha_encode(y))
-#             a = jnp.where(valid_mask, a, 0)
-
-#             return jnp.where(mask_a, a, 0)
-        
-#     key, subkey = jrandom.split(key)
-#     alpha = batch_encode(y, subkey)
-
-#     return _smooth(jrandom.split(key, len(t)), t, alpha, u)

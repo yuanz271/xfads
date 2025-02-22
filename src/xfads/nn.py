@@ -2,16 +2,18 @@ from functools import partial
 import math
 from typing import Callable, Optional
 
+import numpy as np
 import jax
 from jax import nn as jnn, random as jrandom, numpy as jnp
-from jaxtyping import PRNGKeyArray, Array, Scalar
+from jaxtyping import ArrayLike, PRNGKeyArray, Array, Scalar
 import equinox as eqx
 from equinox import nn as enn, Module
 from equinox.nn import Linear
 
 
 _MIN_NORM = 1e-6
-
+MAX_EXP = 5.
+EPS = np.finfo(np.float32).eps
 
 def make_mlp(
     in_size,
@@ -43,13 +45,65 @@ def make_mlp(
     return enn.Sequential(layers)
 
 
-def softplus(x):
-    """A numerical safe implementation"""
-    return jnp.log1p(jnp.exp(-jnp.abs(x))) + jnp.maximum(x, 0)
+# def softplus(x):
+#     """A numerical safe implementation"""
+#     return jnp.log1p(jnp.exp(-jnp.abs(x))) + jnp.maximum(x, 0)
 
 
-def softplus_inverse(x):
-    return x + jnp.log(-jnp.expm1(-x))
+# def softplus_inverse(x: ArrayLike):
+    # return jnp.log(jnp.maximum(jnp.expm1(x), 1e-6))
+
+
+def constrain_positive(x):
+    # x0 = MAX_EXP
+    # is_too_large = x > x0
+    # expx0 = jnp.exp(x0)
+    # clipped = jnp.where(is_too_large, x0, x)
+    # expx = jnp.exp(clipped)
+    # taylor = expx0 + expx0 * (x - x0)
+    # return jnp.where(is_too_large, taylor, expx)
+    return jnp.square(x) + EPS
+
+
+def unconstrain_positive(x):
+    # return jnp.log(x + EPS)
+    return jnp.sqrt(x)
+
+
+def softplus_inverse(x: ArrayLike):
+    # We begin by deriving a more numerically stable softplus_inverse:
+    # x = softplus(y) = Log[1 + exp{y}], (which means x > 0).
+    # ==> exp{x} = 1 + exp{y}                                (1)
+    # ==> y = Log[exp{x} - 1]                                (2)
+    #       = Log[(exp{x} - 1) / exp{x}] + Log[exp{x}]
+    #       = Log[(1 - exp{-x}) / 1] + Log[exp{x}]
+    #       = Log[1 - exp{-x}] + x                           (3)
+    # (2) is the "obvious" inverse, but (3) is more stable than (2) for large x.
+    # For small x (e.g. x = 1e-10), (3) will become -inf since 1 - exp{-x} will
+    # be zero. To fix this, we use 1 - exp{-x} approx x for small x > 0.
+    #
+    # In addition to the numerically stable derivation above, we clamp
+    # small/large values to be congruent with the logic in:
+    # tensorflow/core/kernels/softplus_op.h
+    #
+    # Finally, we set the input to one whenever the input is too large or too
+    # small. This ensures that no unchosen codepath is +/- inf. This is
+    # necessary to ensure the gradient doesn't get NaNs. Recall that the
+    # gradient of `where` behaves like `pred*pred_true + (1-pred)*pred_false`
+    # thus an `inf` in an unselected path results in `0*inf=nan`. We are careful
+    # to overwrite `x` with ones only when we will never actually use this
+    # value. Note that we use ones and not zeros since `log(expm1(0.)) = -inf`.
+    threshold = jnp.log(jnp.finfo(jnp.asarray(x).dtype).eps) + 2.
+
+    is_too_small = x < jnp.exp(threshold)
+    is_too_large = x > -threshold
+    too_small_value = threshold
+    too_large_value = x
+    # This `where` will ultimately be a NOP because we won't select this
+    # codepath whenever we used the surrogate `ones_like`.
+    x = jnp.where(is_too_small | is_too_large, 1., x)
+    y = x + jnp.log(-jnp.expm1(-x))  # == log(expm1(x))
+    return jnp.where(is_too_small, too_small_value, jnp.where(is_too_large, too_large_value, y))
 
 
 def _norm_except_axis(v: Array, norm: Callable[[Array], Scalar], axis: Optional[int]):
@@ -181,7 +235,7 @@ class RBFN(Module):
 
     def __call__(self, x):
         kernels = jax.vmap(gauss_rbf, in_axes=(None, 0, None))(
-            x, self.centers, softplus(self.scale)
+            x, self.centers, constrain_positive(self.scale)
         )
         return self.readout(kernels)
 

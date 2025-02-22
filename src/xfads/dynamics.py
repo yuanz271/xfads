@@ -7,8 +7,8 @@ from jaxtyping import Array, PRNGKeyArray, Scalar
 import equinox as eqx
 
 from .helper import Registry
-from .nn import softplus, softplus_inverse
-from .distributions import MVN
+from .nn import constrain_positive, unconstrain_positive
+from .distributions import Approx
 
 
 registry = Registry()
@@ -23,7 +23,7 @@ class Noise(Protocol):
 
 
 def predict_moment(
-    z: Array, u: Array, f, noise: Noise, approx: Type[MVN], *, key=None
+    z: Array, u: Array, f, noise: Noise, approx: Type[Approx], *, key=None
 ) -> Array:
     """mu[t](z[t-1])"""
     ztp1 = f(z, u, key=key)
@@ -47,7 +47,7 @@ def sample_expected_moment(
     u: Array,
     f,
     noise: Noise,
-    approx: Type[MVN],
+    approx: Type[Approx],
     mc_size: int,
 ) -> Array:
     """E[mu[t](z[t-1])]"""
@@ -66,10 +66,10 @@ class DiagGaussian(eqx.Module, strict=True):
     unconstrained_cov: Array
     
     def __init__(self, cov, size):
-        self.unconstrained_cov = jnp.full(size, fill_value=softplus_inverse(cov))
+        self.unconstrained_cov = jnp.full(size, fill_value=unconstrain_positive(cov))
 
     def cov(self) -> Array:
-        return softplus(self.unconstrained_cov)
+        return constrain_positive(self.unconstrained_cov)
 
     # def set_static(self, static=True) -> None:
     #     self.__dataclass_fields__['unconstrained_cov'].metadata = {'static': static}

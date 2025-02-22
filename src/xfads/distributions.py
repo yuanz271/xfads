@@ -7,12 +7,15 @@ from typing import Protocol, Type
 
 import jax
 from jax import numpy as jnp, random as jrandom
+# from jax.nn import softplus  # this version is overflow safe
 from jaxtyping import Array, Scalar, PRNGKeyArray
 import tensorflow_probability.substrates.jax.distributions as tfp
 
 from .helper import Registry
+from .nn import constrain_positive, unconstrain_positive
 
 
+MIN_VAR = 1e-6
 EPS = 1e-6
 registry = Registry()
 
@@ -25,7 +28,7 @@ def _inv(a):
     return jnp.linalg.inv(a + EPS * jnp.eye(a.shape[-1]))
 
 
-class MVN(Protocol):
+class Approx(Protocol):
     """Interface of MVN distributions
     The classes should implement class functions performing
     converion between natural parameter and mean parameter.
@@ -60,6 +63,9 @@ class MVN(Protocol):
 
     @classmethod
     def constrain_natural(cls, unconstrained: Array) -> Array: ...
+
+    @classmethod
+    def unconstrain_natural(cls, natural: Array) -> Array: ...
 
     @classmethod
     def noise_moment(cls, noise_cov) -> Array: ...
@@ -156,7 +162,7 @@ class FullMVN:
 
         loc, diag, lora = jnp.split(unconstrained, [m, m + m])
         L = jnp.outer(lora, lora)
-        V = jnp.diag(jnp.square(diag)) + L
+        V = jnp.diag(constrain_positive(diag)) + L
         v = V.flatten()
         return jnp.concatenate((loc, v))
 
@@ -169,7 +175,7 @@ class FullMVN:
 
         loc, diag, lora = jnp.split(unconstrained, [m, m + m])
         L = jnp.outer(lora, lora)
-        V = jnp.diag(jnp.square(diag)) + L
+        V = jnp.diag(constrain_positive(diag)) + L
         v = -V.flatten()  # negative definite
         return jnp.concatenate((loc, v))
 
@@ -188,7 +194,7 @@ class LoRaMVN:
 
         loc, diag, lora = jnp.split(unconstrained, [m, m + 1])
         L = jnp.outer(lora, lora)
-        V = jnp.square(diag) * jnp.eye(m) + L
+        V = jnp.diag(constrain_positive(diag)) + L
         v = V.flatten()
         return jnp.concatenate((loc, v))
 
@@ -268,14 +274,20 @@ class DiagMVN:
     @classmethod
     def constrain_moment(cls, unconstrained) -> Array:
         loc, v = jnp.split(unconstrained, 2)
-        v = jnp.square(v)
+        v = constrain_positive(v)
         return jnp.concatenate((loc, v))
 
     @classmethod
     def constrain_natural(cls, unconstrained) -> Array:
-        loc, v = jnp.split(unconstrained, 2)
-        v = -jnp.square(v)
-        return jnp.concatenate((loc, v))
+        n1, n2 = jnp.split(unconstrained, 2)
+        n2 = -constrain_positive(n2)
+        return jnp.concatenate((n1, n2))
+
+    @classmethod
+    def unconstrain_natural(cls, natural) -> Array:
+        n1, n2 = jnp.split(natural, 2)
+        n2 = unconstrain_positive(-n2)
+        return jnp.concatenate((n1, n2))
 
     @classmethod
     def noise_moment(cls, noise_cov) -> Array:

@@ -1,14 +1,14 @@
 from typing import Protocol, Type
 
 import jax
-from jax import numpy as jnp
+from jax import nn as jnn, numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, Scalar
 import tensorflow_probability.substrates.jax.distributions as tfp
 import chex
 import equinox as eqx
 
-from .nn import softplus, softplus_inverse, VariantBiasLinear, StationaryLinear
-from .distributions import MVN
+from .nn import VariantBiasLinear, StationaryLinear, constrain_positive, unconstrain_positive
+from .distributions import Approx
 from .helper import Registry
 
 
@@ -66,7 +66,7 @@ class DiagGaussian(eqx.Module):
 
     def __init__(self, state_dim, observation_dim, *, key, norm_readout: bool = False, **kwargs):
         cov = kwargs.get('cov', jnp.ones(observation_dim))
-        self.unconstrained_cov = softplus_inverse(cov)
+        self.unconstrained_cov = unconstrain_positive(cov)
 
         n_steps = kwargs.get('n_steps', 0)
 
@@ -76,9 +76,9 @@ class DiagGaussian(eqx.Module):
             self.readout = StationaryLinear(state_dim, observation_dim, key=key, norm_readout=norm_readout)
 
     def cov(self):
-        return softplus(self.unconstrained_cov)
+        return constrain_positive(self.unconstrained_cov)
 
-    def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx: Type[MVN], mc_size: int) -> Array:
+    def eloglik(self, key: PRNGKeyArray, t: Array, moment: Array, y: Array, approx: Type[Approx], mc_size: int) -> Array:
         mean_z, cov_z = approx.moment_to_canon(moment)
         mean_y = self.readout(t, mean_z)
         C = self.readout.weight  # left matrix

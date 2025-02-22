@@ -9,11 +9,11 @@ from .nn import make_mlp
 
 
 class AlphaEncoder(eqx.Module):
-    approx: Type = eqx.field(static=True)
+    # approx: Type = eqx.field(static=True)
     layer: eqx.Module
 
     def __init__(self, state_dim, observation_dim, depth, width, approx, *, key, dropout=None):
-        self.approx = approx
+        # self.approx = approx
         
         self.layer = make_mlp(
             observation_dim, approx.param_size(state_dim), width, depth, key=key, dropout=dropout
@@ -24,14 +24,14 @@ class AlphaEncoder(eqx.Module):
     
 
 class BetaEncoder(eqx.Module):
-    approx: Type = eqx.field(static=True)
+    # approx: Type = eqx.field(static=True)
     h0: Array
     cell: eqx.Module
     output: eqx.Module
     dropout: eqx.nn.Dropout | None
 
     def __init__(self, state_dim, depth, width, approx, *, key, dropout=None):
-        self.approx = approx
+        # self.approx = approx
         
         param_size = approx.param_size(state_dim)
 

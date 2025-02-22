@@ -31,7 +31,7 @@ class Opt:
 
 
 class Stopping:
-    def __init__(self, ref, min_improvement=0, min_epoch=0, patience=1):
+    def __init__(self, ref, min_improvement=0, min_epoch=0, patience=0):
         self.min_improvement = min_improvement
         self.min_epoch = min_epoch
         self.patience = patience
@@ -39,18 +39,19 @@ class Stopping:
 
     def should_stop(self, loss: float) -> bool:
         stop = False
-        if np.isfinite(loss):
-            self._losses.append(loss)
 
-        if len(self._losses) < self.min_epoch:
+        if len(self._losses) <= self.min_epoch + 1:
             return False
 
         average_improvement = -np.mean(
-            np.diff(self._losses[-max(self.patience + 1, 2) :])
+            np.diff(self._losses[-max(self.patience + 1, 1) :])
         )
 
         if average_improvement < self.min_improvement:
             stop = True
+
+        if np.isfinite(loss):
+            self._losses.append(loss)
 
         return stop
 
@@ -152,14 +153,14 @@ def train(
 
     def batch_fb_predict(model, z, u, *, key):
         fkey, bkey = jrandom.split(key) 
-        ztp1 = eqx.filter_vmap(eqx.filter_vmap(model.forward))(z, u, key=jrandom.split(fkey, z.shape[:2]))
-        zt = eqx.filter_vmap(eqx.filter_vmap(model.backward))(ztp1, u, key=jrandom.split(bkey, z.shape[:2]))
+        ztp1 = jax.vmap(jax.vmap(model.forward))(z, u, key=jrandom.split(fkey, z.shape[:2]))
+        zt = jax.vmap(jax.vmap(model.backward))(ztp1, u, key=jrandom.split(bkey, z.shape[:2]))
         return zt
 
     def batch_bf_predict(model, z, u, *, key):
         fkey, bkey = jrandom.split(key) 
-        ztm1 = eqx.filter_vmap(eqx.filter_vmap(model.backward))(z, u, key=jrandom.split(bkey, z.shape[:2]))
-        zt = eqx.filter_vmap(eqx.filter_vmap(model.forward))(ztm1, u, key=jrandom.split(fkey, z.shape[:2]))
+        ztm1 = jax.vmap(jax.vmap(model.backward))(z, u, key=jrandom.split(bkey, z.shape[:2]))
+        zt = jax.vmap(jax.vmap(model.forward))(ztm1, u, key=jrandom.split(fkey, z.shape[:2]))
         return zt
 
     def batch_loss(model, key, tb, yb, ub, wb) -> Scalar:
@@ -249,7 +250,7 @@ def train(
         key, eval_key = jrandom.split(key)
         terminate = False
         batch_size = opt.batch_size
-        stopping = Stopping(evaluate(model, eval_key, valid_set).item(), 0, opt.min_iter, 10)
+        stopping = Stopping(evaluate(model, eval_key, valid_set).item(), 0, opt.min_iter, 5)
 
         with trange(opt.max_iter) as pbar:
             for i in pbar:

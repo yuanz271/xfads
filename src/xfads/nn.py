@@ -8,7 +8,6 @@ from jax import nn as jnn, random as jrandom, numpy as jnp
 from jaxtyping import ArrayLike, PRNGKeyArray, Array, Scalar
 import equinox as eqx
 from equinox import nn as enn, Module
-from equinox.nn import Linear
 
 
 _MIN_NORM = 1e-6
@@ -71,6 +70,7 @@ def unconstrain_positive(x):
 
 
 def softplus_inverse(x: ArrayLike):
+    # From TF
     # We begin by deriving a more numerically stable softplus_inverse:
     # x = softplus(y) = Log[1 + exp{y}], (which means x > 0).
     # ==> exp{x} = 1 + exp{y}                                (1)
@@ -114,14 +114,14 @@ def _norm_except_axis(v: Array, norm: Callable[[Array], Scalar], axis: Optional[
 
 
 class WeightNorm(Module):
-    layer: Linear
+    layer: enn.Linear
     weight_name: str = eqx.field(static=True)
     axis: Optional[int] = eqx.field(static=True)
     _norm: Callable[[Array], Scalar]
 
     def __init__(
         self,
-        layer: Linear,
+        layer: enn.Linear,
         weight_name: str = "weight",
         axis: Optional[int] = None,
     ):
@@ -167,7 +167,7 @@ class StationaryLinear(Module):
     layer: Module
 
     def __init__(self, state_dim, observation_dim, *, key, norm_readout: bool = False):
-        self.layer = Linear(state_dim, observation_dim, key=key, use_bias=True)
+        self.layer = enn.Linear(state_dim, observation_dim, key=key, use_bias=True)
 
         if norm_readout:
             self.layer = WeightNorm(self.layer)
@@ -189,7 +189,7 @@ class VariantBiasLinear(Module):
     ):
         wkey, bkey = jrandom.split(key, 2)
 
-        self.layer = Linear(state_dim, observation_dim, key=wkey, use_bias=False)
+        self.layer = enn.Linear(state_dim, observation_dim, key=wkey, use_bias=False)
         lim = 1 / math.sqrt(state_dim)
         self.biases = jrandom.uniform(
             bkey,
@@ -231,7 +231,7 @@ class RBFN(Module):
             ckey, shape=(network_size, input_size), minval=-1, maxval=1
         )
         self.scale = jnp.ones(input_size)
-        self.readout = Linear(network_size, output_size, key=key)
+        self.readout = enn.Linear(network_size, output_size, key=key)
 
     def __call__(self, x):
         kernels = jax.vmap(gauss_rbf, in_axes=(None, 0, None))(
@@ -280,3 +280,18 @@ class DataMask(Module, strict=True):
             q  = 1 - jax.lax.stop_gradient(self.p)
             mask = jrandom.bernoulli(key, q, shape) 
             return subkey, mask
+
+
+class Constrained(Module):
+    array: Array
+    transform: Callable
+    inv_transform: Callable
+    
+    def __init__(self, value, transform: Callable, inv_transform: Callable):
+        self.transform = transform
+        self.inv_transform = inv_transform
+
+        self.array = inv_transform(jnp.array(value))
+
+    def __call__(self) -> Array:
+        return self.transform(self.array)

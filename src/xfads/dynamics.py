@@ -76,6 +76,8 @@ class DiagGaussian(eqx.Module, strict=True):
 
 
 class AbstractDynamics(eqx.Module):
+    noise: eqx.AbstractVar[eqx.Module]
+
     def cov(self) -> Array:
         return self.noise.cov()
     

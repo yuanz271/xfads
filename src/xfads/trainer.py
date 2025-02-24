@@ -31,16 +31,17 @@ class Opt:
 
 
 class Stopping:
-    def __init__(self, ref, min_improvement=0, min_epoch=0, patience=0):
+    def __init__(self, initial_loss, min_improvement=0, min_epoch=0, patience=0):
         self.min_improvement = min_improvement
         self.min_epoch = min_epoch
         self.patience = patience
-        self._losses = [ref]
+        self._losses = [initial_loss]
 
     def should_stop(self, loss: float) -> bool:
         stop = False
+        self._losses.append(loss)
 
-        if len(self._losses) <= self.min_epoch + 1:
+        if len(self._losses) <= self.min_epoch:
             return False
 
         average_improvement = -np.mean(
@@ -49,9 +50,6 @@ class Stopping:
 
         if average_improvement < self.min_improvement:
             stop = True
-
-        if np.isfinite(loss):
-            self._losses.append(loss)
 
         return stop
 
@@ -277,8 +275,8 @@ def train(
                 if terminate or stopping.should_stop(epoch_loss):
                     break
 
-            return model, epoch_loss
+        return model, stopping._losses
 
-    model, loss = optimize(model, seed, batch_loss, *data)
+    model, losses = optimize(model, seed, batch_loss, *data)
 
     return model

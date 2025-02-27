@@ -168,7 +168,7 @@ def train(
         key, subkey = jrandom.split(key)
         _, moment, moment_p = model(tb, yb, ub, key=subkey)
         
-        if model.hyperparam.mode == "bi":
+        if model.hyperparam.mode == "bifilter":
             key, skey, fbkey, bfkey = jrandom.split(key, 4)
             zb = batch_sample(skey, moment, model.hyperparam.approx)
             zb_hat_fb = batch_fb_predict(model, zb, ub, key=fbkey)

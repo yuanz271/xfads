@@ -117,7 +117,6 @@ class WeightNorm(Module):
     layer: enn.Linear
     weight_name: str = eqx.field(static=True)
     axis: Optional[int] = eqx.field(static=True)
-    _norm: Callable[[Array], Scalar]
 
     def __init__(
         self,
@@ -134,12 +133,9 @@ class WeightNorm(Module):
         self.weight_name = weight_name
         self.axis = axis
 
-        self._norm = partial(
-            _norm_except_axis,
-            norm=partial(jnp.linalg.norm, keepdims=True),
-            axis=axis,
-        )
-
+    def _norm(self, w):
+        return _norm_except_axis(w, norm=partial(jnp.linalg.norm, keepdims=True), axis=self.axis)
+    
     @property
     def weight(self) -> Array:
         w = getattr(self.layer, self.weight_name)

@@ -161,14 +161,14 @@ def train(
         zt = jax.vmap(jax.vmap(model.forward))(ztm1, u, key=jrandom.split(fkey, z.shape[:2]))
         return zt
 
-    def batch_loss(model, key, tb, yb, ub, wb) -> Scalar:
+    def batch_loss(model, key, tb, yb, ub) -> Scalar:
         key, subkey = jrandom.split(key)
         chex.assert_equal_shape((tb, yb, ub), dims=(0, 1))
 
         key, subkey = jrandom.split(key)
         _, moment, moment_p = model(tb, yb, ub, key=subkey)
         
-        if model.hyperparam.mode == "bi":
+        if model.hyperparam.mode == "bifilter":
             key, skey, fbkey, bfkey = jrandom.split(key, 4)
             zb = batch_sample(skey, moment, model.hyperparam.approx)
             zb_hat_fb = batch_fb_predict(model, zb, ub, key=fbkey)
@@ -180,10 +180,8 @@ def train(
         key, subkey = jrandom.split(key)
         free_energy = -batch_elbo(model, subkey, tb, moment, moment_p, yb)
 
-        chex.assert_equal_shape((free_energy, wb))
-
         loss = (
-            jnp.mean(free_energy * wb)
+            jnp.mean(free_energy)
             + model.hyperparam.fb_penalty * fb_loss
             + model.hyperparam.noise_penalty * model.forward.loss()
             # + hyperparam.noise_penalty * model.backward.loss()
@@ -225,9 +223,6 @@ def train(
                     ),
                     P(
                         "batch", None, None
-                    ),
-                    P(
-                        "batch", None
                     ),
                 ),
                 out_specs=P(),

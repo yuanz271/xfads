@@ -1,12 +1,11 @@
 from functools import partial
-from typing import Self, Type, Callable
+from typing import Type, Callable
 import json
 
 from jaxtyping import Array, PRNGKeyArray
 import jax
 from jax import numpy as jnp, random as jrandom
 import equinox as eqx
-import chex
 
 from . import core, distributions, dynamics, observations, encoders
 from .core import Hyperparam, Mode
@@ -191,10 +190,10 @@ class XFADS(eqx.Module, strict=True):
     def load_model(cls, file):
         with open(file, "rb") as f:
             spec = json.loads(f.readline().decode())
-            model = XFADS(**spec)
+            model = eqx.filter_eval_shape(XFADS, **spec)
             return eqx.tree_deserialise_leaves(f, model)
     
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def __call__(self, t, y, u, *, key) -> tuple[Array, Array, Array]:
         batch_alpha_encode: Callable = jax.vmap(jax.vmap(self.alpha_encoder))
         batch_constrain_natural: Callable = jax.vmap(jax.vmap(self.hyperparam.approx.constrain_natural))

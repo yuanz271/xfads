@@ -17,6 +17,7 @@ dependencies = [
     "equinox>=0.11.11",
     "dm-tree<=0.1.8",
     "tensorflow-probability>=0.25.0",
+    "orbax-checkpoint>=0.11.5",
 ]
 readme = "README.md"
 requires-python = ">= 3.11"
@@ -29,7 +30,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.ruff]
-ignore = ["E501"]
+ignore = ["E501", "F722"]
 
 [dependency-groups]
 dev = [

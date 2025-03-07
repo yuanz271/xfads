@@ -9,6 +9,8 @@ from jaxtyping import ArrayLike, PRNGKeyArray, Array, Scalar
 import equinox as eqx
 from equinox import nn as enn, Module
 
+from . import constraints
+
 
 _MIN_NORM = 1e-6
 MAX_EXP = 5.
@@ -278,16 +280,13 @@ class DataMask(Module, strict=True):
             return subkey, mask
 
 
-class Constrained(Module):
-    array: Array
-    transform: Callable
-    inv_transform: Callable
+class Param(Module):
+    unconstrained: Array
+    constraint: constraints.AbstractConstraint
     
-    def __init__(self, value, transform: Callable, inv_transform: Callable):
-        self.transform = transform
-        self.inv_transform = inv_transform
-
-        self.array = inv_transform(jnp.array(value))
+    def __init__(self, value: ArrayLike, constraint: constraints.AbstractConstraint):
+        self.constraint = constraint
+        self.unconstrained = constraint.unconstrain(value)
 
     def __call__(self) -> Array:
-        return self.transform(self.array)
+        return self.constraint(self.unconstrained)

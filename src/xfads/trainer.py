@@ -2,12 +2,11 @@ from dataclasses import dataclass
 from functools import partial
 
 from jax.sharding import PartitionSpec as P
-from jax.experimental import mesh_utils
 from jax.experimental.shard_map import shard_map
 import numpy as np
 import jax
 from jax import numpy as jnp, random as jrandom
-from jaxtyping import Array, Scalar, Float, PRNGKeyArray
+from jaxtyping import Array, Scalar, Float
 import optax
 import chex
 import equinox as eqx
@@ -71,26 +70,6 @@ def make_optimizer(model, opt: Opt):
     return optimizer, opt_state
 
 
-# def data_loader(
-#     *arrays, batch_size, key
-# ):  # -> Generator[tuple[Any, Any, KeyArray], Any, None]:
-#     chex.assert_equal_shape(arrays, dims=0)
-
-#     n: int = jnp.size(arrays[0], 0)
-#     q = n // batch_size
-#     m = n % batch_size
-
-#     key, permkey = jrandom.split(key)
-#     perm = jax.random.permutation(permkey, jnp.arange(n))
-
-#     K = q + 1 if m > 0 else q
-#     for k in range(K):
-#         indices = perm[k * batch_size : (k + 1) * batch_size]
-#         ret = tuple(arr[indices] for arr in arrays)
-#         key_k = jrandom.fold_in(key, k)
-#         yield key_k, *ret
-
-
 def data_loader(
     *arrays, batch_size, rng
 ):  # -> Generator[tuple[Any, Any, KeyArray], Any, None]:
@@ -113,9 +92,6 @@ def train(
     opt: Opt,
 ) -> smoother.XFADS:
     chex.assert_equal_shape(data, dims=(0, 1))
-    key = jrandom.key(seed)
-
-    # data = (jnp.array(arr) for arr in data)
 
     def batch_elbo(model, key, ts, moment_s, moment_p, ys) -> Array:
         _elbo = jax.vmap(

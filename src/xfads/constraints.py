@@ -47,7 +47,7 @@ class AbstractConstraint(eqx.Module):
         return self.constrain(unconstrained)
     
 
-class Positivity(AbstractConstraint, strict=True):
+class Positivity(AbstractConstraint):
     def constrain(self, unconstrained: ArrayLike) -> ArrayLike:
         return jax.nn.softplus(unconstrained)
     

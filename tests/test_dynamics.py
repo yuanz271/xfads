@@ -1,20 +1,38 @@
 from jax import numpy as jnp, random as jrnd
+import equinox as eqx
 import chex
-from xfads.distributions import MVN
+from jaxtyping import Array
 
-from xfads.dynamics import Nonlinear, predict_moment, sample_expected_moment, DiagNoise
+from xfads.distributions import DiagMVN
+from xfads.dynamics import AbstractDynamics, predict_moment, sample_expected_moment, DiagGaussian
+from xfads.nn import make_mlp
 
 
-def test_nonlinear(spec):
-    key = jrnd.key(0)
-    state_dim = spec['state_dim']
-    input_dim = spec['input_dim']
-    
-    f = Nonlinear(state_dim, input_dim, key=key, kwargs=spec['dyn_spec'])
-    z = jrnd.normal(key, (state_dim,))
-    u = jrnd.normal(key, (input_dim,))
-    fz = f(z, u)
-    chex.assert_equal_shape((z, fz))
+class Nonlinear(AbstractDynamics):
+    noise: eqx.Module
+    f: eqx.Module
+
+    def __init__(
+        self,
+        state_dim: int,
+        input_dim: int,
+        width: int,
+        depth: int,
+        cov,
+        *,
+        key,
+        dropout: float | None = None,
+        **kwargs,
+    ):
+        self.noise = DiagGaussian(cov, state_dim)
+        self.f = make_mlp(state_dim + input_dim, state_dim, width, depth, key=key, final_bias=False, dropout=dropout)
+
+    def __call__(self, z: Array, u: Array, *, key=None) -> Array:
+        x = jnp.concatenate((z, u), axis=-1)
+        return z + self.f(x, key=key)
+
+    def loss(self):
+        return jnp.mean(self.cov())
 
 
 def test_predict_moment(spec):
@@ -22,14 +40,14 @@ def test_predict_moment(spec):
     state_dim = spec['state_dim']
     input_dim = spec['input_dim']
 
-    f = Nonlinear(state_dim, input_dim, key=key, kwargs=spec['dyn_spec'])
-    noise = DiagNoise(jnp.eye(state_dim))
+    f = Nonlinear(state_dim, input_dim, spec['width'], spec['depth'], key=key, cov=1.)
+    noise = DiagGaussian(1, state_dim)
 
     z = jrnd.normal(key, (state_dim,))
     u = jrnd.normal(key, (input_dim,))
 
-    moment = predict_moment(z, u, f, noise, MVN)
-    chex.assert_shape(moment, (MVN.moment_size(state_dim),))
+    moment = predict_moment(z, u, f, noise, DiagMVN)
+    chex.assert_shape(moment, (DiagMVN.param_size(state_dim),))
 
 
 def test_sample_expected_moment(spec):
@@ -37,12 +55,12 @@ def test_sample_expected_moment(spec):
     state_dim = spec['state_dim']
     input_dim = spec['input_dim']
 
-    f = Nonlinear(state_dim, input_dim, key=key, kwargs=spec['dyn_spec'])
-    noise = DiagNoise(jnp.eye(state_dim))
+    f = Nonlinear(state_dim, input_dim, spec['width'], spec['depth'], key=key, cov=1.)
+    noise = DiagGaussian(1, state_dim)
 
     z = jrnd.normal(key, (state_dim,))
     u = jrnd.normal(key, (input_dim,))
     
-    moment = predict_moment(z, u, f, noise, MVN)
-    moment = sample_expected_moment(key, moment, u, f, noise, MVN, 10)
-    chex.assert_shape(moment, (MVN.moment_size(state_dim),))
+    moment = predict_moment(z, u, f, noise, DiagMVN)
+    moment = sample_expected_moment(key, moment, u, f, noise, DiagMVN, 10)
+    chex.assert_shape(moment, (DiagMVN.param_size(state_dim),))

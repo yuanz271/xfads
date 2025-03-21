@@ -4,7 +4,7 @@ from typing import Callable, Optional
 
 import numpy as np
 import jax
-from jax import nn as jnn, random as jrandom, numpy as jnp
+from jax import nn as jnn, random as jrnd, numpy as jnp
 from jaxtyping import ArrayLike, PRNGKeyArray, Array, Scalar
 import equinox as eqx
 from equinox import nn as enn, Module
@@ -28,15 +28,15 @@ def make_mlp(
     final_activation: Callable | None = None,
     dropout: float | None = None,
 ) -> Module:
-    key, layer_key = jrandom.split(key)
+    key, layer_key = jrnd.split(key)
     layers = [enn.Linear(in_size, width, key=layer_key), enn.Lambda(activation)]
     for i in range(depth - 1):
-        key, layer_key = jrandom.split(key)
+        key, layer_key = jrnd.split(key)
         layers.append(enn.Linear(width, width, key=layer_key))
         layers.append(enn.Lambda(activation))
         if dropout is not None:
             layers.append(enn.Dropout(dropout))
-    key, layer_key = jrandom.split(key)
+    key, layer_key = jrnd.split(key)
     layers.append(enn.Linear(width, out_size, key=layer_key, use_bias=final_bias))
     if final_activation is not None:
         layers.append(enn.Lambda(activation))
@@ -123,11 +123,11 @@ class VariantBiasLinear(Module):
     def __init__(
         self, state_dim, observation_dim, n_biases, *, key, norm_readout: bool = False
     ):
-        wkey, bkey = jrandom.split(key, 2)
+        wkey, bkey = jrnd.split(key, 2)
 
         self.layer = enn.Linear(state_dim, observation_dim, key=wkey, use_bias=False)
         lim = 1 / math.sqrt(state_dim)
-        self.biases = jrandom.uniform(
+        self.biases = jrnd.uniform(
             bkey,
             (n_biases, observation_dim),
             dtype=self.layer.weight.dtype,
@@ -162,8 +162,8 @@ class RBFN(Module):
     def __init__(
         self, input_size, output_size, network_size, *, key, normalized: bool = False
     ):
-        key, ckey = jrandom.split(key)
-        self.centers = jrandom.uniform(
+        key, ckey = jrnd.split(key)
+        self.centers = jrnd.uniform(
             ckey, shape=(network_size, input_size), minval=-1, maxval=1
         )
         self.scale = jnp.ones(input_size)
@@ -212,9 +212,9 @@ class DataMask(Module, strict=True):
                 f"{self.__name__} requires a key when running in non-deterministic mode."
             )
         else:
-            key, subkey = jrandom.split(key)
+            key, subkey = jrnd.split(key)
             q  = 1 - jax.lax.stop_gradient(self.p)
-            mask = jrandom.bernoulli(key, q, shape) 
+            mask = jrnd.bernoulli(key, q, shape) 
             return subkey, mask
 
 

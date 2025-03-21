@@ -1,7 +1,7 @@
 import functools
 import warnings
 
-from jax import random as jrandom
+from jax import random as jrnd
 
 
 class SingletonMeta(type):
@@ -40,7 +40,7 @@ def newkey(func):
 
     @functools.wraps(func)
     def wrapper(*args, key, **kwargs):
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         return subkey, func(*args, key=key, **kwargs)
     
     return wrapper

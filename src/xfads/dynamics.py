@@ -2,12 +2,12 @@ from functools import partial
 from typing import Protocol, Type
 
 import jax
-from jax import numpy as jnp, nn as jnn, random as jrandom
+from jax import numpy as jnp, nn as jnn, random as jrnd
 from jaxtyping import Array, PRNGKeyArray, Scalar
 import equinox as eqx
 
 from .helper import Registry
-from .nn import constrain_positive, unconstrain_positive
+from .constraints import constrain_positive, unconstrain_positive
 from .distributions import Approx
 
 
@@ -51,7 +51,7 @@ def sample_expected_moment(
     mc_size: int,
 ) -> Array:
     """E[mu[t](z[t-1])]"""
-    key, subkey = jrandom.split(key)
+    key, subkey = jrnd.split(key)
     z = approx.sample_by_moment(subkey, moment, mc_size)
     u_shape = (mc_size,) + u.shape
     u = jnp.broadcast_to(u, shape=u_shape)

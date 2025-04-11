@@ -156,20 +156,6 @@ class XFADS(Model):
     def prior_natural(self) -> Array:
         return self.hyperparam.approx.constrain_natural(self.unconstrained_prior_natural)
 
-    # def save_model(self, file) -> None:
-    #     with open(file, "wb") as f:
-    #         spec = json.dumps(self.spec)
-    #         f.write((spec + "\n").encode())
-    #         eqx.tree_serialise_leaves(f, self)
-
-    # @classmethod
-    # def load_model(cls, file):
-    #     with open(file, "rb") as f:
-    #         spec = json.loads(f.readline().decode())
-    #         model = eqx.filter_eval_shape(XFADS, **spec)
-    #         return eqx.tree_deserialise_leaves(f, model)
-    
-    # @eqx.filter_jit
     def __call__(self, t, y, u, *, key) -> tuple[Array, Array, Array]:
         batch_alpha_encode: Callable = jax.vmap(jax.vmap(self.alpha_encoder))
         batch_constrain_natural: Callable = jax.vmap(jax.vmap(self.hyperparam.approx.constrain_natural))

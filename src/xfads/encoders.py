@@ -1,7 +1,6 @@
 import math
-from typing import Callable, Type
 import jax
-from jax import numpy as jnp, nn as jnn, random as jrandom
+from jax import random as jrnd
 from jaxtyping import Array, Float
 import equinox as eqx
 
@@ -35,14 +34,14 @@ class BetaEncoder(eqx.Module):
         
         param_size = approx.param_size(state_dim)
 
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         lim = 1 / math.sqrt(width)
-        self.h0 = jrandom.uniform(subkey, (width,), minval=-lim, maxval=lim)
+        self.h0 = jrnd.uniform(subkey, (width,), minval=-lim, maxval=lim)
 
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         self.cell = eqx.nn.GRUCell(param_size, width, key=subkey)
 
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         self.output = eqx.nn.Linear(width, param_size, key=subkey)
 
         if dropout is not None:

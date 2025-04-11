@@ -6,13 +6,13 @@ import math
 from typing import Protocol, Type
 
 import jax
-from jax import numpy as jnp, random as jrandom
+from jax import numpy as jnp, random as jrnd
 # from jax.nn import softplus  # this version is overflow safe
 from jaxtyping import Array, Scalar, PRNGKeyArray
 import tensorflow_probability.substrates.jax.distributions as tfp
 
 from .helper import Registry
-from .nn import constrain_positive, unconstrain_positive
+from .constraints import constrain_positive, unconstrain_positive
 
 
 MIN_VAR = 1e-6
@@ -100,7 +100,7 @@ class FullMVN:
     @classmethod
     def sample_by_moment(cls, key: PRNGKeyArray, moment: Array, mc_size: int) -> Array:
         loc, V = cls.moment_to_canon(moment)
-        return jrandom.multivariate_normal(
+        return jrnd.multivariate_normal(
             key, loc, V, shape=(mc_size,)
         )  # It seems JAX does reparameterization trick
 
@@ -223,7 +223,7 @@ class DiagMVN:
     def sample_by_moment(cls, key, moment, mc_size=None) -> Array:
         mean, cov = cls.moment_to_canon(moment)
         shape = None if mc_size is None else (mc_size,)
-        return jrandom.multivariate_normal(
+        return jrnd.multivariate_normal(
             key, mean, jnp.diag(cov), shape=shape
         )  # It seems JAX does the reparameterization trick
 

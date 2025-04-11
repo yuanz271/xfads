@@ -2,19 +2,42 @@ from dataclasses import dataclass
 from functools import partial
 
 from jax.sharding import PartitionSpec as P
-from jax.experimental import mesh_utils
 from jax.experimental.shard_map import shard_map
 import numpy as np
 import jax
-from jax import numpy as jnp, random as jrandom
-from jaxtyping import Array, Scalar, Float, PRNGKeyArray
+from jax import numpy as jnp, random as jrnd
+from jaxtyping import Array, Scalar, Float
 import optax
 import chex
 import equinox as eqx
-from tqdm import trange
+
+from rich.progress import (
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+    SpinnerColumn,
+)
 
 from . import vi, smoother
 
+
+def training_progress():
+    return Progress(
+        SpinnerColumn(),  # Include default columns
+        TextColumn("[progress.description]{task.description}"),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        "Elapsed",
+        TimeElapsedColumn(),
+        TextColumn("•"),
+        "Remainning",
+        TimeRemainingColumn(),
+        TextColumn("•"),
+        "Loss",
+        TextColumn("{task.fields[loss]:.3f}")
+    )
 
 @dataclass
 class Opt:
@@ -71,26 +94,6 @@ def make_optimizer(model, opt: Opt):
     return optimizer, opt_state
 
 
-# def data_loader(
-#     *arrays, batch_size, key
-# ):  # -> Generator[tuple[Any, Any, KeyArray], Any, None]:
-#     chex.assert_equal_shape(arrays, dims=0)
-
-#     n: int = jnp.size(arrays[0], 0)
-#     q = n // batch_size
-#     m = n % batch_size
-
-#     key, permkey = jrandom.split(key)
-#     perm = jax.random.permutation(permkey, jnp.arange(n))
-
-#     K = q + 1 if m > 0 else q
-#     for k in range(K):
-#         indices = perm[k * batch_size : (k + 1) * batch_size]
-#         ret = tuple(arr[indices] for arr in arrays)
-#         key_k = jrandom.fold_in(key, k)
-#         yield key_k, *ret
-
-
 def data_loader(
     *arrays, batch_size, rng
 ):  # -> Generator[tuple[Any, Any, KeyArray], Any, None]:
@@ -113,9 +116,6 @@ def train(
     opt: Opt,
 ) -> smoother.XFADS:
     chex.assert_equal_shape(data, dims=(0, 1))
-    key = jrandom.key(seed)
-
-    # data = (jnp.array(arr) for arr in data)
 
     def batch_elbo(model, key, ts, moment_s, moment_p, ys) -> Array:
         _elbo = jax.vmap(
@@ -129,7 +129,7 @@ def train(
             )
         )  # (batch, seq)
 
-        keys = jrandom.split(key, ys.shape[:2])  # ys.shape[:2] + (2,)
+        keys = jrnd.split(key, ys.shape[:2])  # ys.shape[:2] + (2,)
 
         return _elbo(keys, ts, moment_s, moment_p, ys)
 
@@ -137,12 +137,12 @@ def train(
         key, moment: Float[Array, "batch time moment"], approx
     ) -> Float[Array, "batch time variable"]:
         def seq_sample(key, moment: Float[Array, "time moment"]):
-            keys = jrandom.split(key, jnp.size(moment, 0))
+            keys = jrnd.split(key, jnp.size(moment, 0))
             ret = jax.vmap(approx.sample_by_moment)(keys, moment)
             chex.assert_shape(ret, moment.shape[:1] + (None,))
             return ret
 
-        keys = jrandom.split(key, jnp.size(moment, 0))
+        keys = jrnd.split(key, jnp.size(moment, 0))
         ret = jax.vmap(seq_sample)(keys, moment)
         # jax.debug.print("\nmoment shape={shape}\n", shape=moment.shape)
         chex.assert_shape(ret, moment.shape[:2] + (None,))
@@ -150,26 +150,26 @@ def train(
         return ret
 
     def batch_fb_predict(model, z, u, *, key):
-        fkey, bkey = jrandom.split(key) 
-        ztp1 = jax.vmap(jax.vmap(model.forward))(z, u, key=jrandom.split(fkey, z.shape[:2]))
-        zt = jax.vmap(jax.vmap(model.backward))(ztp1, u, key=jrandom.split(bkey, z.shape[:2]))
+        fkey, bkey = jrnd.split(key) 
+        ztp1 = jax.vmap(jax.vmap(model.forward))(z, u, key=jrnd.split(fkey, z.shape[:2]))
+        zt = jax.vmap(jax.vmap(model.backward))(ztp1, u, key=jrnd.split(bkey, z.shape[:2]))
         return zt
 
     def batch_bf_predict(model, z, u, *, key):
-        fkey, bkey = jrandom.split(key) 
-        ztm1 = jax.vmap(jax.vmap(model.backward))(z, u, key=jrandom.split(bkey, z.shape[:2]))
-        zt = jax.vmap(jax.vmap(model.forward))(ztm1, u, key=jrandom.split(fkey, z.shape[:2]))
+        fkey, bkey = jrnd.split(key) 
+        ztm1 = jax.vmap(jax.vmap(model.backward))(z, u, key=jrnd.split(bkey, z.shape[:2]))
+        zt = jax.vmap(jax.vmap(model.forward))(ztm1, u, key=jrnd.split(fkey, z.shape[:2]))
         return zt
 
-    def batch_loss(model, key, tb, yb, ub, wb) -> Scalar:
-        key, subkey = jrandom.split(key)
+    def batch_loss(model, key, tb, yb, ub) -> Scalar:
+        key, subkey = jrnd.split(key)
         chex.assert_equal_shape((tb, yb, ub), dims=(0, 1))
 
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         _, moment, moment_p = model(tb, yb, ub, key=subkey)
         
         if model.hyperparam.mode == "bifilter":
-            key, skey, fbkey, bfkey = jrandom.split(key, 4)
+            key, skey, fbkey, bfkey = jrnd.split(key, 4)
             zb = batch_sample(skey, moment, model.hyperparam.approx)
             zb_hat_fb = batch_fb_predict(model, zb, ub, key=fbkey)
             zb_hat_bf = batch_bf_predict(model, zb, ub, key=bfkey)
@@ -177,13 +177,11 @@ def train(
         else:
             fb_loss = 0.
 
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         free_energy = -batch_elbo(model, subkey, tb, moment, moment_p, yb)
 
-        chex.assert_equal_shape((free_energy, wb))
-
         loss = (
-            jnp.mean(free_energy * wb)
+            jnp.mean(free_energy)
             + model.hyperparam.fb_penalty * fb_loss
             + model.hyperparam.noise_penalty * model.forward.loss()
             # + hyperparam.noise_penalty * model.backward.loss()
@@ -193,7 +191,7 @@ def train(
 
     def optimize(model, seed, batch_loss_func, *data):
         rng = np.random.default_rng(seed)
-        key = jrandom.key(seed)
+        key = jrnd.key(seed)
 
         n_devices = len(jax.devices())
 
@@ -226,9 +224,6 @@ def train(
                     P(
                         "batch", None, None
                     ),
-                    P(
-                        "batch", None
-                    ),
                 ),
                 out_specs=P(),
                 check_rep=False,
@@ -245,30 +240,35 @@ def train(
             model = eqx.apply_updates(model, updates)
             return model, opt_state, loss
         
-        key, eval_key = jrandom.split(key)
+        key, eval_key = jrnd.split(key)
         terminate = False
         batch_size = opt.batch_size
-        stopping = Stopping(evaluate(model, eval_key, valid_set).item(), 0, opt.min_iter, 5)
+        valid_loss = evaluate(model, eval_key, valid_set).item()
+        stopping = Stopping(valid_loss, 0, opt.min_iter, 5)
 
-        with trange(opt.max_iter) as pbar:
-            for i in pbar:
-                epoch_key: Array = jrandom.fold_in(key, i)
+        # with trange(opt.max_iter) as pbar:
+            
+        with training_progress() as pbar:
+            task_id = pbar.add_task("Fitting", total=opt.max_iter, loss=valid_loss)
+            for i in range(opt.max_iter):
+                epoch_key: Array = jrnd.fold_in(key, i)
                 try:
-                    epoch_key, loader_key = jrandom.split(epoch_key)
+                    epoch_key, loader_key = jrnd.split(epoch_key)
                     for j, batch in enumerate(
                         data_loader(*training_set, batch_size=batch_size, rng=rng)
                     ):
-                        batch_key = jrandom.fold_in(epoch_key, j)
+                        batch_key = jrnd.fold_in(epoch_key, j)
                         model, opt_state, loss = step(
                             model, batch_key, opt_state, *batch
                         )
                 except KeyboardInterrupt:
                     terminate = True
 
-                _, subkey = jrandom.split(epoch_key)
+                _, subkey = jrnd.split(epoch_key)
                 epoch_loss = evaluate(model, subkey, valid_set).item()
                 # epoch_loss /= j+1
-                pbar.set_postfix({"loss": f"{epoch_loss:.3f}"})
+                # pbar.set_postfix({"loss": f"{epoch_loss:.3f}"})
+                pbar.update(task_id, advance=1, loss=valid_loss)
 
                 chex.assert_tree_all_finite(epoch_loss)
 

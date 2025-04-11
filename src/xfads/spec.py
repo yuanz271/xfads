@@ -1,4 +1,3 @@
-from equinox import Module
 from typing import TypedDict
 
 

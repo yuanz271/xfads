@@ -1,12 +1,11 @@
 from functools import partial
-from typing import Self, Type, Callable
+from typing import Type, Callable
 import json
 
 from jaxtyping import Array, PRNGKeyArray
 import jax
-from jax import numpy as jnp, random as jrandom
+from jax import numpy as jnp, random as jrnd
 import equinox as eqx
-import chex
 
 from . import core, distributions, dynamics, observations, encoders
 from .core import Hyperparam, Mode
@@ -48,9 +47,9 @@ class DataMasker(eqx.Module, strict=True):
                 f"{self.__name__} requires a key when running in non-deterministic mode."
             )
         else:
-            key, subkey = jrandom.split(key)
+            key, subkey = jrnd.split(key)
             q  = 1 - jax.lax.stop_gradient(self.p)
-            mask = jrandom.bernoulli(key, q, shape) 
+            mask = jrnd.bernoulli(key, q, shape) 
             return subkey, mask
 
 
@@ -108,7 +107,7 @@ class XFADS(eqx.Module, strict=True):
             enc_kwargs=enc_kwargs,
         )
 
-        key = jrandom.key(seed) 
+        key = jrnd.key(seed) 
 
         self.masker: DataMasker = DataMasker(dropout)
 
@@ -126,7 +125,7 @@ class XFADS(eqx.Module, strict=True):
         )
 
         dynamics_class = dynamics.get_class(forward_dynamics)
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         self.forward = dynamics_class(
             key=subkey,
             state_dim=state_dim,
@@ -137,7 +136,7 @@ class XFADS(eqx.Module, strict=True):
         
         if backward_dynamics is not None:
             dynamics_class = dynamics.get_class(backward_dynamics)
-            key, subkey = jrandom.split(key)
+            key, subkey = jrnd.split(key)
             self.backward = dynamics_class(
                 key=subkey,
                 state_dim=state_dim,
@@ -149,7 +148,7 @@ class XFADS(eqx.Module, strict=True):
             self.backward = None
 
         observation_class = observations.get_class(observation)
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         self.likelihood = observation_class(
             state_dim,
             observation_dim,
@@ -159,10 +158,10 @@ class XFADS(eqx.Module, strict=True):
         )
         
         #####
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         self.alpha_encoder = encoders.AlphaEncoder(state_dim, observation_dim, approx=approx, key=subkey, **enc_kwargs)
         
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         self.beta_encoder = encoders.BetaEncoder(state_dim, approx=approx, key=subkey, **enc_kwargs)
         #####
 
@@ -191,10 +190,10 @@ class XFADS(eqx.Module, strict=True):
     def load_model(cls, file):
         with open(file, "rb") as f:
             spec = json.loads(f.readline().decode())
-            model = XFADS(**spec)
+            model = eqx.filter_eval_shape(XFADS, **spec)
             return eqx.tree_deserialise_leaves(f, model)
     
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def __call__(self, t, y, u, *, key) -> tuple[Array, Array, Array]:
         batch_alpha_encode: Callable = jax.vmap(jax.vmap(self.alpha_encoder))
         batch_constrain_natural: Callable = jax.vmap(jax.vmap(self.hyperparam.approx.constrain_natural))
@@ -208,8 +207,8 @@ class XFADS(eqx.Module, strict=True):
                     # chex.assert_equal_shape((y, valid_mask), dims=(0,1))
                     y = jnp.where(mask_y, y, 0)
 
-                    key, subkey = jrandom.split(key)
-                    a = batch_constrain_natural(batch_alpha_encode(y, key=jrandom.split(subkey, y.shape[:2])))
+                    key, subkey = jrnd.split(key)
+                    a = batch_constrain_natural(batch_alpha_encode(y, key=jrnd.split(subkey, y.shape[:2])))
                     a = jnp.where(mask_y, a, 0)
 
                     key, mask_a= self.masker(a, key=key)
@@ -224,14 +223,14 @@ class XFADS(eqx.Module, strict=True):
                     # chex.assert_equal_shape((y, mask_y), dims=(0, 1))
                     y = jnp.where(mask_y, y, 0)
                     
-                    key, subkey = jrandom.split(key)
-                    a = batch_constrain_natural(batch_alpha_encode(y, key=jrandom.split(subkey, y.shape[:2])))
+                    key, subkey = jrnd.split(key)
+                    a = batch_constrain_natural(batch_alpha_encode(y, key=jrnd.split(subkey, y.shape[:2])))
                     a = jnp.where(mask_y, a, 0)  # miss_values have no updates to state
 
                     key, mask_a = self.masker(y, key=key)
                     a = jnp.where(mask_a, a, 0)  # pseudo missing values
         
-                    b = batch_constrain_natural(batch_beta_encode(a, key=jrandom.split(key, a.shape[0])))
+                    b = batch_constrain_natural(batch_beta_encode(a, key=jrnd.split(key, a.shape[0])))
                     key, mask_b = self.masker(y, key=key)
                     b = jnp.where(mask_b, b, 0)  # filter only steps
 
@@ -242,7 +241,7 @@ class XFADS(eqx.Module, strict=True):
 
                     return ab
                 
-        key, subkey = jrandom.split(key)
+        key, subkey = jrnd.split(key)
         alpha = batch_encode(y, subkey)
 
-        return batch_smooth(jrandom.split(key, len(t)), t, alpha, u)
+        return batch_smooth(jrnd.split(key, len(t)), t, alpha, u)

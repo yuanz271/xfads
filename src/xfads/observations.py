@@ -1,13 +1,12 @@
 from typing import Protocol, Type
 
-import jax
-from jax import nn as jnn, numpy as jnp
-from jaxtyping import Array, PRNGKeyArray, Scalar
+from jax import numpy as jnp
+from jaxtyping import Array, PRNGKeyArray
 import tensorflow_probability.substrates.jax.distributions as tfp
-import chex
 import equinox as eqx
 
-from .nn import VariantBiasLinear, StationaryLinear, constrain_positive, unconstrain_positive
+from .nn import VariantBiasLinear, StationaryLinear
+from .constraints import constrain_positive, unconstrain_positive
 from .distributions import Approx
 from .helper import Registry
 

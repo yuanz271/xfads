@@ -6,17 +6,18 @@ authors = [
     { name = "yuanz", email = "yuanz271@gmail.com" }
 ]
 dependencies = [
-    "tqdm>=4.66.1",
     "jaxtyping>=0.2.19",
     "optax>=0.1.7",
     "chex>=0.1.7",
     "numpy>=1.24.4",
     "scipy>=1.10.1",
     "scikit-learn>=1.4.1",
-    "jax<0.5.0",
+    "jax",
     "equinox>=0.11.11",
     "dm-tree<=0.1.8",
     "tensorflow-probability>=0.25.0",
+    "orbax-checkpoint>=0.11.5",
+    "rich>=14.0.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.11"
@@ -29,7 +30,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.ruff]
-ignore = ["E501"]
+ignore = ["E501", "F722"]
 
 [dependency-groups]
 dev = [

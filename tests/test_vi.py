@@ -1,9 +1,9 @@
-from jax import numpy as jnp, random as jrnd, random as jrandom
-from equinox import nn as enn
-import chex
+# from jax import numpy as jnp, random as jrnd, random as jrandom
+# from equinox import nn as enn
+# import chex
 
-from xfads.distributions import MVN, DiagMVN
-from xfads.vi import DiagMVNLik, elbo
+# from xfads.distributions import MVN, DiagMVN
+# from xfads.vi import DiagMVNLik, elbo
 
 
 # def test_poisson(spec):

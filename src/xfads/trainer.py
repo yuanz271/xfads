@@ -10,10 +10,34 @@ from jaxtyping import Array, Scalar, Float
 import optax
 import chex
 import equinox as eqx
-from tqdm import trange
+
+from rich.progress import (
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+    SpinnerColumn,
+)
 
 from . import vi, smoother
 
+
+def training_progress():
+    return Progress(
+        SpinnerColumn(),  # Include default columns
+        TextColumn("[progress.description]{task.description}"),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        "Elapsed",
+        TimeElapsedColumn(),
+        TextColumn("•"),
+        "Remainning",
+        TimeRemainingColumn(),
+        TextColumn("•"),
+        "Loss",
+        TextColumn("{task.fields[loss]:.3f}")
+    )
 
 @dataclass
 class Opt:
@@ -219,10 +243,14 @@ def train(
         key, eval_key = jrnd.split(key)
         terminate = False
         batch_size = opt.batch_size
-        stopping = Stopping(evaluate(model, eval_key, valid_set).item(), 0, opt.min_iter, 5)
+        valid_loss = evaluate(model, eval_key, valid_set).item()
+        stopping = Stopping(valid_loss, 0, opt.min_iter, 5)
 
-        with trange(opt.max_iter) as pbar:
-            for i in pbar:
+        # with trange(opt.max_iter) as pbar:
+            
+        with training_progress() as pbar:
+            task_id = pbar.add_task("Fitting", total=opt.max_iter, loss=valid_loss)
+            for i in range(opt.max_iter):
                 epoch_key: Array = jrnd.fold_in(key, i)
                 try:
                     epoch_key, loader_key = jrnd.split(epoch_key)
@@ -239,7 +267,8 @@ def train(
                 _, subkey = jrnd.split(epoch_key)
                 epoch_loss = evaluate(model, subkey, valid_set).item()
                 # epoch_loss /= j+1
-                pbar.set_postfix({"loss": f"{epoch_loss:.3f}"})
+                # pbar.set_postfix({"loss": f"{epoch_loss:.3f}"})
+                pbar.update(task_id, advance=1, loss=valid_loss)
 
                 chex.assert_tree_all_finite(epoch_loss)
 

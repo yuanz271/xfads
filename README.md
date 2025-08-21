@@ -3,7 +3,7 @@
 **eXponential FAmily Dynamical Systems**
 
 XFADS, built on JAX and Equinox.
-For more information, see the [paper](https://arxiv.org/abs/2403.01371) and [original implementation](https://github.com/catniplab/xfads).
+For more information, see the [paper](https://arxiv.org/abs/2403.01371) and [PyTorch implementation](https://github.com/catniplab/xfads).
 
 ## Overview
 
@@ -28,7 +28,7 @@ The library implements advanced variational inference techniques with support fo
 ### Install from Source
 
 ```bash
-git clone --recursive https://github.com/yuanz271/xfads.git
-cd xfads
+git clone --recursive https://github.com/yuanz271/jaxfads.git
+cd jaxfads
 pip install -e ".[dev]"
 ```

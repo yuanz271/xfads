@@ -1,5 +1,5 @@
 [project]
-name = "xfads"
+name = "jaxfads"
 version = "0.1.0"
 description = "eXponential FAmily Dynamical System"
 authors = [{ name = "yuanz", email = "yuanz271@gmail.com" }]
@@ -16,20 +16,20 @@ classifiers = [
 ]
 dependencies = [
     "optax>=0.1.7",
-    "chex>=0.1.7",
     "numpy>=1.24.4",
-    "scipy>=1.10.1",
-    "scikit-learn>=1.4.1",
-    "jax<0.7",
-    "equinox>=0.11.11",
-    "tensorflow-probability>=0.25.0",
-    "orbax-checkpoint>=0.11.5",
+    "jax>=0.4.38",
+    "equinox>=0.11.12",
+    "omegaconf>=2.3.0",
     "rich>=14.0.0",
     "gearax",
+    "tfp-nightly[jax]>=0.25",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/jaxfads"]
+
 [project.urls]
-Repository = "https://github.com/yuanz271/xfads"
+Repository = "https://github.com/yuanz271/jaxfads"
 
 [build-system]
 requires = ["hatchling"]
@@ -47,8 +47,8 @@ gearax = { path = "gearax", editable = true }
 
 [dependency-groups]
 dev = [
+    "chex>=0.1.90",
     "matplotlib>=3.10.1",
-    "pre-commit>=4.1.0",
     "pytest>=8.3.4",
     "ruff>=0.9.4",
 ]

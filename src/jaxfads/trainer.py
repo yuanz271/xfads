@@ -5,6 +5,26 @@ This module provides training routines for XFADS models using JAX and Optax.
 It implements efficient batch training with multi-device support, progress
 tracking, and validation-based early stopping. The training is based on
 maximizing the Evidence Lower Bound (ELBO) objective.
+
+Functions
+---------
+training_progress
+    Create a Rich progress bar for training visualization.
+train_test_split
+    Split arrays into training and test sets with random permutation.
+to_shard
+    Place arrays on specified devices with optional sharding.
+batch_elbo
+    Compute Evidence Lower Bound (ELBO) for batched sequences.
+train_fast
+    Fast training routine for XFADS models with multi-device support.
+train
+    Training routine for XFADS models with multi-device support.
+
+Classes
+-------
+Opt
+    Configuration dataclass for XFADS training hyperparameters.
 """
 
 from dataclasses import dataclass
@@ -108,8 +128,11 @@ class Opt:
     - Gradient noise injection for better generalization
     - Validation-based early stopping
     """
-    min_iter: int = 50
+
+    min_iter: int = 0
     max_iter: int = 50
+    min_epoch: int = 0
+    max_epoch: int = 50
     learning_rate: float = 1e-3
     clip_norm: float = 5.0
     batch_size: int = 1
@@ -189,7 +212,9 @@ def to_shard(arrays, sharding=None):
     return tuple(jax.device_put(arr, sharding) for arr in arrays)
 
 
-def batch_elbo(model, key, times, posterior_moments, predicted_moments, observations) -> Array:
+def batch_elbo(
+    model, key, times, posterior_moments, predicted_moments, observations
+) -> Array:
     """
     Compute Evidence Lower Bound (ELBO) for batched sequences.
 
@@ -227,8 +252,8 @@ def batch_elbo(model, key, times, posterior_moments, predicted_moments, observat
             partial(
                 vi.elbo,
                 eloglik=model.likelihood.eloglik,
-                approx=model.hyperparam.approx,
-                mc_size=model.hyperparam.mc_size,
+                approx=model.approx,
+                mc_size=model.conf.mc_size,
             )
         )
     )  # (batch, seq)
@@ -341,15 +366,19 @@ def train_fast(model, data, *, conf):
         times, observations, controls, covariates = batch
 
         key, model_key = jrnd.split(key)
-        _, posterior_moments, prior_moments = model(times, observations, controls, covariates, key=model_key)
+        _, posterior_moments, prior_moments = model(
+            times, observations, controls, covariates, key=model_key
+        )
 
         key, elbo_key = jrnd.split(key)
-        free_energy = -batch_elbo(model, elbo_key, times, posterior_moments, prior_moments, observations)
+        free_energy = -batch_elbo(
+            model, elbo_key, times, posterior_moments, prior_moments, observations
+        )
 
         loss = (
             jnp.mean(free_energy)
-            + model.hyperparam.noise_penalty * model.forward.loss()
-            # + hyperparam.noise_penalty * model.backward.loss()
+            + model.conf.noise_penalty * model.forward.loss()
+            # + model.conf.noise_penalty * model.backward.loss()
         )
 
         return loss
@@ -403,7 +432,12 @@ def train_fast(model, data, *, conf):
 
             key, perm_key = jrnd.split(key)
             perm, idx = lax.cond(
-                idx + batch_size >= train_size, new_permutation, old_permutation, perm_key, perm, idx
+                idx + batch_size >= train_size,
+                new_permutation,
+                old_permutation,
+                perm_key,
+                perm,
+                idx,
             )
 
             model = eqx.combine(params, static)
@@ -553,15 +587,19 @@ def train(model, data, *, conf):
         times, observations, controls, covariates = batch
 
         key, model_key = jrnd.split(key)
-        _, posterior_moments, prior_moments = model(times, observations, controls, covariates, key=model_key)
+        _, posterior_moments, prior_moments = model(
+            times, observations, controls, covariates, key=model_key
+        )
 
         key, elbo_key = jrnd.split(key)
-        free_energy = -batch_elbo(model, elbo_key, times, posterior_moments, prior_moments, observations)
+        free_energy = -batch_elbo(
+            model, elbo_key, times, posterior_moments, prior_moments, observations
+        )
 
         loss = (
             jnp.mean(free_energy)
-            + model.hyperparam.noise_penalty * model.forward.loss()
-            # + hyperparam.noise_penalty * model.backward.loss()
+            + model.conf.noise_penalty * model.forward.loss()
+            # + model.conf.noise_penalty * model.backward.loss()
         )
 
         return loss
@@ -581,16 +619,20 @@ def train(model, data, *, conf):
         )
         for epoch in range(max_epoch):
             key, epoch_key = jrnd.split(key)
-            model = train_epoch(model, train_set, batch_loss, optimizer, opt_state, batch_size, epoch_key)
+            model = train_epoch(
+                model,
+                train_set,
+                batch_loss,
+                optimizer,
+                opt_state,
+                batch_size,
+                epoch_key,
+            )
             valid_loss = lax.stop_gradient(
                 batch_loss(eqx.nn.inference_mode(model), valid_set, valid_key)
             )
             mean_loss = mean_loss * beta + valid_loss * (1 - beta)
-            jax.debug.callback(
-                lambda vl, ml: pbar.update(task_id, advance=1, loss=vl, mean=ml),
-                valid_loss,
-                mean_loss,
-            )
+            pbar.update(task_id, advance=1, loss=valid_loss, mean=mean_loss)
             converged = jnp.isclose(mean_loss, valid_loss) and valid_loss <= mean_loss
 
             if epoch > min_epoch and converged:

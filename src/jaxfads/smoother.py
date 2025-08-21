@@ -1,10 +1,15 @@
 """
 XFADS smoother module.
 
-This module implements the main XFADS
-class that orchestrates the complete variational inference pipeline for Bayesian
-state-space modeling. It combines neural encoders, dynamics models, observation
-models, and filtering/smoothing algorithms.
+This module implements the main XFADS class that orchestrates the complete
+variational inference pipeline for Bayesian state-space modeling. It combines
+neural encoders, dynamics models, observation models, and filtering/smoothing
+algorithms.
+
+Classes
+-------
+XFADS
+    Main class for Bayesian state-space modeling with variational inference.
 """
 
 from collections.abc import Callable
@@ -21,7 +26,7 @@ from .distributions import Approx
 from .dynamics import Dynamics
 from .observations import Likelihood
 from .nn import DataMasker
-from .core import Hyperparam, Mode
+from .core import Mode
 
 
 class XFADS(ConfModule):
@@ -47,8 +52,6 @@ class XFADS(ConfModule):
 
     Attributes
     ----------
-    hyperparam : Hyperparam
-        Compiled hyperparameters for the model.
     forward : Dynamics
         Forward dynamics model for state transitions.
     likelihood : Likelihood
@@ -97,126 +100,84 @@ class XFADS(ConfModule):
     >>>
     >>> natural, moment, prediction = model(t, y, u, c, key=key)
     """
-    hyperparam: Hyperparam = eqx.field(init=False, static=True)
-    forward: eqx.Module = eqx.field(init=False)
-    # backward: eqx.Module | None = eqx.field(init=False)
-    likelihood: eqx.Module = eqx.field(init=False)
-    alpha_encoder: eqx.Module = eqx.field(init=False)
-    beta_encoder: eqx.Module = eqx.field(init=False)
-    masker: DataMasker = eqx.field(init=False)
-    unconstrained_prior_natural: Array = eqx.field(init=False)
+    forward: eqx.Module
+    # backward: eqx.Module | None
+    likelihood: eqx.Module
+    alpha_encoder: eqx.Module
+    beta_encoder: eqx.Module
+    masker: DataMasker
+    unconstrained_prior_natural: Array
 
-    def __post_init__(self, key):  # type: ignore
+    def __init__(self, conf, key):
         """
-        Initialize XFADS model components after configuration.
+        Initialize XFADS model components.
 
         Parameters
         ----------
-        key : PRNGKeyArray
+        conf : DictConfig
+            Configuration object containing model hyperparameters.
+        key : Array
             JAX random key for parameter initialization.
 
         Notes
         -----
-        This method is automatically called after __init__ by the ConfModule
-        framework. It initializes all neural networks, dynamics models, and
-        observation models based on the provided configuration.
+        Initializes all neural networks, dynamics models, and observation models
+        based on the provided configuration. This method is automatically called
+        by the ConfModule framework.
         """
+        self.conf = conf
+
         state_dim = self.conf.state_dim
-        # observation_dim = self.conf.observation_dim
-        mc_size = self.conf.mc_size
         seed = self.conf.seed
         dropout = self.conf.dropout
-        mode = self.conf.mode
         forward = self.conf.forward
         observation = self.conf.observation
-        fb_penalty = self.conf.fb_penalty
-        noise_penalty = self.conf.noise_penalty
 
         key = jrnd.key(seed)
 
         self.masker: DataMasker = DataMasker(dropout)
 
-        approx: type[Approx] = Approx.get_subclass(self.conf.approx)
-
-        self.hyperparam = Hyperparam(
-            approx=approx,
-            state_dim=state_dim,
-            # iu_dim=iu_dim,
-            # eu_dim=eu_dim,
-            # observation_dim=observation_dim,
-            mc_size=mc_size,
-            fb_penalty=fb_penalty,
-            noise_penalty=noise_penalty,
-            mode=mode,
-        )
-
         key, ky = jrnd.split(key)
         self.forward = Dynamics.get_subclass(forward)(
             self.conf.dyn_conf,
             key=ky,
-            # state_dim=state_dim,
-            # iu_dim=iu_dim,
-            # eu_dim=eu_dim,
-            # cov=state_noise,
-            # **dyn_kwargs,
         )
-
-        # if backward is not None:
-        #     key, ky = jrnd.split(key)
-        #     self.backward = AbstractDynamics.get_subclass(backward)(
-        #         key=ky,
-        #         state_dim=state_dim,
-        #         iu_dim=iu_dim,
-        #         eu_dim=eu_dim,
-        #         cov=state_noise,
-        #         **dyn_kwargs,
-        #     )
-        # else:
-        #     self.backward = None
 
         key, ky = jrnd.split(key)
         self.likelihood = Likelihood.get_subclass(observation)(
             self.conf.obs_conf,
             key=ky,
-            # state_dim,  # type: ignore
-            # observation_dim,
-            # n_steps=n_steps,
-            # **obs_kwargs,
         )
 
-        #####
         key, ky = jrnd.split(key)
         self.alpha_encoder = encoders.AlphaEncoder(
             self.conf.enc_conf,
             ky,
-            # state_dim, observation_dim, approx, key=ky, **enc_kwargs
         )
 
         key, ky = jrnd.split(key)
         self.beta_encoder = encoders.BetaEncoder(
             self.conf.enc_conf,
             ky,
-            # state_dim, approx, key=ky, **enc_kwargs
         )
-        #####
 
         # if "l" in static_params:
         #     self.likelihood.set_static()
         # if "s" in static_params:
         #     self.forward.set_static()
 
-        self.unconstrained_prior_natural = approx.unconstrain_natural(
-            approx.prior_natural(state_dim)
+        self.unconstrained_prior_natural = self.approx.unconstrain_natural(
+            self.approx.prior_natural(state_dim)
         )
 
-    def init(self, t, y, u, c):
+    def initialize(self, t, y, u, c):
         """
         Initialize model parameters based on data statistics.
 
         Parameters
         ----------
         t : Array, shape (T,)
-            Time steps.
+            Time steps for the sequences.
         y : Array, shape (N, T, D_obs)
             Observation sequences.
         u : Array, shape (N, T, D_u)
@@ -227,7 +188,7 @@ class XFADS(ConfModule):
         Returns
         -------
         XFADS
-            Model with initialized parameters.
+            Model instance with initialized parameters.
 
         Notes
         -----
@@ -269,6 +230,10 @@ class XFADS(ConfModule):
             Path where to save the model.
         """
         save_model(path, model)
+    
+    @property
+    def approx(self):
+        return Approx.get_subclass(self.conf.approx)
 
     def prior_natural(self) -> Array:
         """
@@ -284,7 +249,7 @@ class XFADS(ConfModule):
         Applies constraints to ensure parameters are in valid range
         for the chosen exponential family approximation.
         """
-        return self.hyperparam.approx.constrain_natural(
+        return self.approx.constrain_natural(
             self.unconstrained_prior_natural
         )
 
@@ -307,7 +272,7 @@ class XFADS(ConfModule):
             Control/input sequences.
         c : Array, shape (N, T, D_c)
             Covariate sequences.
-        key : PRNGKeyArray
+        key : Array
             JAX random key for stochastic operations.
 
         Returns
@@ -357,34 +322,15 @@ class XFADS(ConfModule):
         """
         batch_alpha_encode: Callable = vmap(vmap(self.alpha_encoder))  # type: ignore
         batch_constrain_natural: Callable = vmap(
-            vmap(self.hyperparam.approx.constrain_natural)
+            vmap(self.approx.constrain_natural)
         )
         batch_beta_encode: Callable = vmap(self.beta_encoder)  # type: ignore
 
-        match self.hyperparam.mode:
+        match self.conf.mode:
             case Mode.BIFILTER:
                 raise NotImplementedError("BIFILTER mode is not implemented.")
-                # batch_smooth = vmap(partial(core.bismooth, model=self))
-
-                # def batch_encode(y: Array, key) -> Array:
-                #     mask_y = jnp.all(
-                #         jnp.isfinite(y), axis=2, keepdims=True
-                #     )  # nonfinite are missing values
-                #     # chex.assert_equal_shape((y, valid_mask), dims=(0,1))
-                #     y = jnp.where(mask_y, y, 0)
-
-                #     key, ky = jrnd.split(key)
-                #     a = batch_constrain_natural(
-                #         batch_alpha_encode(y, key=jrnd.split(ky, y.shape[:2]))
-                #     )
-                #     a: Array = jnp.where(mask_y, a, 0)
-
-                #     key, mask_a = self.masker(a, key=key)
-                #     a = jnp.where(mask_a, a, 0)  # type: ignore
-
-                #     return a
             case _:
-                batch_smooth = vmap(partial(core.filter, model=self))
+                batch_smooth = vmap(partial(core.filter, self))
 
                 def batch_encode(y: Array, key) -> Array:
                     # handling missing values

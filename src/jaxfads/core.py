@@ -4,9 +4,20 @@ Core filtering and smoothing algorithms for XFADS.
 This module implements the fundamental algorithms for XFADS,
 including forward filtering and bidirectional smoothing
 using variational inference in exponential family approximations.
+
+Functions
+---------
+filter
+    Forward filtering for state estimation using variational inference.
+bismooth
+    Bidirectional filtering for improved state smoothing.
+
+Classes
+-------
+Mode
+    Enumeration of inference modes for XFADS.
 """
 
-from dataclasses import dataclass
 from enum import auto, StrEnum
 from functools import partial
 
@@ -32,45 +43,13 @@ class Mode(StrEnum):
     BIFILTER = auto()
 
 
-@dataclass
-class Hyperparam:
-    """
-    Hyperparameters for XFADS configuration.
-
-    Parameters
-    ----------
-    approx : type
-        The exponential family approximation class to use.
-    state_dim : int
-        Dimensionality of the latent state space.
-    mc_size : int
-        Number of Monte Carlo samples for expectation approximation.
-    fb_penalty : float
-        Forward-backward penalty weight for regularization.
-    noise_penalty : float
-        Noise penalty weight for dynamics regularization.
-    mode : str
-        Inference mode, one of Mode enum values.
-    """
-    approx: type
-    state_dim: int
-    # iu_dim: int
-    # eu_dim: int
-    # observation_dim: int
-    # covariate_dim: int
-    mc_size: int
-    fb_penalty: float
-    noise_penalty: float
-    mode: str
-
-
 def filter(
+    model,
     key: Array,
     _t: Array,
     alpha: Array,
     u: Array,
     c: Array,
-    model,
 ) -> tuple[Array, Array, Array]:
     """
     Forward filtering for state estimation in XFADS.
@@ -81,18 +60,18 @@ def filter(
 
     Parameters
     ----------
+    model : XFADS
+        The XFADS model containing dynamics and hyperparameters.
     key : Array
         JAX random number generator key for stochastic operations.
-    t : Array, shape (T,)
-        Time steps for the sequence.
+    _t : Array, shape (T,)
+        Time steps for the sequence (unused in current implementation).
     alpha : Array, shape (T, param_dim)
         Information updates from observations in natural parameter form.
     u : Array, shape (T, input_dim)
         External control/input signals.
     c : Array, shape (T, covariate_dim)
         Time-varying covariates.
-    model : XFADS
-        The XFADS model containing dynamics and hyperparameters.
 
     Returns
     -------
@@ -112,7 +91,7 @@ def filter(
 
     Uses natural parameter representation for numerical stability.
     """
-    approx = model.hyperparam.approx
+    approx = model.approx
     nature_p_1 = (
         model.prior_natural()
     )  # TODO: where should prior belongs, approx or dynamics?
@@ -122,7 +101,7 @@ def filter(
         f=model.forward,
         noise=model.forward,
         approx=approx,
-        mc_size=model.hyperparam.mc_size,
+        mc_size=model.conf.mc_size,
     )
 
     nature_f_1 = nature_p_1 + alpha[0]
@@ -154,12 +133,12 @@ def filter(
 
 
 def bismooth(
+    model,
     key: Array,
     _t: Array,
     alpha: Array,
     u: Array,
     c: Array,
-    model,
 ) -> tuple[Array, Array, Array]:
     """
     Bidirectional filtering for improved state smoothing in XFADS.
@@ -171,18 +150,18 @@ def bismooth(
 
     Parameters
     ----------
-    key : PRNGKeyArray
+    model : XFADS
+        The XFADS model containing forward/backward dynamics.
+    key : Array
         JAX random number generator key for stochastic operations.
-    t : Array, shape (T,)
-        Time steps for the sequence.
+    _t : Array, shape (T,)
+        Time steps for the sequence (unused in current implementation).
     alpha : Array, shape (T, param_dim)
         Information updates from observations in natural parameter form.
     u : Array, shape (T, input_dim)
         External control/input signals.
     c : Array, shape (T, covariate_dim)
         Time-varying covariates.
-    model : XFADS
-        The XFADS model containing forward/backward dynamics.
 
     Returns
     -------
@@ -206,10 +185,12 @@ def bismooth(
 
     References
     ----------
-    Dowling et al. (2023). Linear Time GPs for Inferring Latent Trajectories from Neural Spike Trains. https://arxiv.org/abs/2306.01802. Equations (21-23).
+    Dowling et al. (2023). Linear Time GPs for Inferring Latent Trajectories 
+        from Neural Spike Trains. https://arxiv.org/abs/2306.01802. 
+        Equations (21-23).
     """
-    hyperparam = model.hyperparam
-    approx = hyperparam.approx
+    mc_size = model.conf.mc_size
+    approx = model.approx
     nature_prior = model.prior_natural()
 
     natural_to_moment = jax.vmap(approx.natural_to_moment)
@@ -218,14 +199,14 @@ def bismooth(
         f=model.forward,
         noise=model.forward,
         approx=approx,
-        mc_size=hyperparam.mc_size,
+        mc_size=mc_size,
     )
     expected_moment_backward = partial(
         sample_expected_moment,
         f=model.backward,
         noise=model.backward,
         approx=approx,
-        mc_size=hyperparam.mc_size,
+        mc_size=mc_size,
     )
 
     nature_f_1 = nature_prior + alpha[0]

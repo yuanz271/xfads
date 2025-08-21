@@ -5,15 +5,29 @@ This module provides implementations of exponential family distributions
 with natural and moment parameterizations for variational inference in
 XFADS. Supports various approximations including full covariance, low-rank,
 and diagonal multivariate normal distributions.
+
+Functions
+---------
+damping_inv
+    Compute matrix inverse with damping for numerical stability.
+
+Classes
+-------
+Approx
+    Abstract base class for exponential family approximations.
+FullMVN
+    Full covariance multivariate normal approximation.
+LoRaMVN
+    Low-rank multivariate normal approximation.
+DiagMVN
+    Diagonal covariance multivariate normal approximation.
 """
 
 from abc import abstractmethod, ABC
 import math
 
 from jax import Array, numpy as jnp, random as jrnd
-
-import tensorflow_probability.substrates.jax.distributions as tfp
-
+from tensorflow_probability.substrates.jax import distributions as tfd
 from gearax.mixin import SubclassRegistryMixin
 
 from .constraints import constrain_positive, unconstrain_positive
@@ -350,9 +364,9 @@ class FullMVN(Approx):
     def kl(cls, moment1: Array, moment2: Array) -> Array:
         m1, V1 = cls.moment_to_canon(moment1)
         m2, V2 = cls.moment_to_canon(moment2)
-        return tfp.kl_divergence(
-            tfp.MultivariateNormalFullCovariance(m1, V1),
-            tfp.MultivariateNormalFullCovariance(m2, V2),
+        return tfd.kl_divergence(
+            tfd.MultivariateNormalFullCovariance(m1, V1),
+            tfd.MultivariateNormalFullCovariance(m2, V2),
             allow_nan_stats=False,
         )
 
@@ -477,9 +491,9 @@ class DiagMVN(Approx):
     def kl(cls, moment1, moment2) -> Array:
         m1, cov1 = cls.moment_to_canon(moment1)
         m2, cov2 = cls.moment_to_canon(moment2)
-        return tfp.kl_divergence(
-            tfp.MultivariateNormalDiag(m1, cov1),
-            tfp.MultivariateNormalDiag(m2, cov2),
+        return tfd.kl_divergence(
+            tfd.MultivariateNormalDiag(m1, cov1),
+            tfd.MultivariateNormalDiag(m2, cov2),
             allow_nan_stats=False,
         )
 
